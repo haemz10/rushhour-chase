@@ -437,6 +437,20 @@ function addFloat(x, y, txt, color, scale) {
 }
 
 /* ---------------- 스폰 ---------------- */
+// 코인 아치를 실제 점프 포물선(가슴 높이) 위에 정확히 배치.
+// x0 지점에서 점프하면 코인이 차례로 판정 중심을 통과하도록, 현재 속도로 폭을 계산한다.
+function coinJumpArc(x0, sp) {
+  const g = GY();
+  const air = 2 * 900 / 2400;              // 점프 물리(vy=-900, g=2400)와 동일: 체공 0.75초
+  const span = sp * air;                   // 점프 수평 거리
+  const n = clamp(Math.round(span / 58), 5, 9);
+  for (let i = 0; i < n; i++) {
+    const t = (i / (n - 1)) * air;
+    const feet = 900 * t - 1200 * t * t;   // 시점 t의 발 높이
+    run.coinsArr.push({ x: x0 + t * sp, y: g - 46 - feet, ph: i });
+  }
+}
+
 function spawnPattern() {
   const r = Math.random();
   const x = W + 140;
@@ -447,9 +461,9 @@ function spawnPattern() {
   const adv2 = run.stage >= 2 || run.t > 150;      // 스테이지 2: 더 빠른 킥보드
 
   if (adv && !run.mercyT && r < 0.10) {
-    // 맨홀 구덩이: 점프로만 회피 (위 코인 아치로 점프 유도)
+    // 맨홀 구덩이: 점프로만 회피 (점프 궤적을 따라가는 코인으로 점프 유도)
     O.push({ type: 'pit', x, w: 100, h: 0 });
-    for (let i = 0; i < 5; i++) C.push({ x: x - 60 + i * 44, y: g - 90 - Math.sin(i / 4 * Math.PI) * 55, ph: i });
+    coinJumpArc(x - Math.max(120, run.speed * 0.28), Math.max(340, run.speed));
   } else if (adv && !run.mercyT && r < 0.18) {
     // 폭주 킥보드: 화면 스크롤보다 빠르게 돌진 (펀치 또는 점프)
     O.push({ type: 'rider', x: x + 220, w: 44, h: 88, vx: 120 + hard * 90 + (adv2 ? 45 : 0), ph: rand(0, TAU) });
@@ -471,9 +485,8 @@ function spawnPattern() {
     O.push({ type: 'pigeon', x, w: 52, h: 38, yOff: rand(118, 150), ph: rand(0, TAU) });
     for (let i = 0; i < 5; i++) C.push({ x: x - 40 + i * 44, y: g - 36, ph: i });
   } else if (r < 0.81) {
-    // 코인 아치
-    const n = 7;
-    for (let i = 0; i < n; i++) C.push({ x: x + i * 46, y: g - 50 - Math.sin(i / (n - 1) * Math.PI) * 105, ph: i });
+    // 코인 아치: 점프 포물선과 정확히 일치 (잘 뛰면 전부 먹힌다)
+    coinJumpArc(x, Math.max(340, run.speed));
   } else if (r < 0.90) {
     // 낮은 코인 줄
     for (let i = 0; i < 6; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
@@ -779,7 +792,7 @@ function updatePlay(dt0) {
       if (d < 220) { c.x += dx / d * 620 * dt; c.y += dy / d * 620 * dt; }
     }
     const d2 = Math.hypot(c.x - px, c.y - (P.y - 46));
-    if (d2 < 42) {
+    if (d2 < 48) {
       c.dead = true;
       run.coins += mult;
       run.combo++; run.comboT = 3;
