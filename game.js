@@ -58,6 +58,9 @@ const save = {
   best: 0, bestDist: 0, bank: 0, totalCatches: 0,
   up: { shoe: 0, magnet: 0, shield: 0, heart: 0 },
   muted: false, introSeen: false,
+  skill: 0, failStreak: 0,           // 보이지 않는 동적 난이도(DDA) 지표
+  missions: null,                    // 일일 미션 {date, list}
+  streakDay: '', streakCount: 0,     // 연속 출석
 };
 try {
   const raw = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
@@ -148,6 +151,12 @@ const Sound = {
       case 'buy':    this.tone(784, 0.08, 'square', 0.09); this.tone(1175, 0.15, 'square', 0.09, 0, this.ac.currentTime + 0.07); break;
       case 'clear':  [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(f, 0.2, 'square', 0.1, 0, this.ac.currentTime + i * 0.1)); break;
       case 'escape': this.tone(500, 0.2, 'sawtooth', 0.1, -250); break;
+      case 'fever':  [659, 784, 988, 1318, 988, 1318, 1568].forEach((f, i) => this.tone(f, 0.12, 'square', 0.09, 0, this.ac.currentTime + i * 0.07)); break;
+      case 'gold':   [784, 1046, 1318, 1568, 2093].forEach((f, i) => this.tone(f, 0.14, 'triangle', 0.11, 0, this.ac.currentTime + i * 0.06)); break;
+      case 'near':   this.tone(1568, 0.07, 'square', 0.05, 300); break;
+      case 'boss':   [98, 92, 87, 82].forEach((f, i) => this.tone(f, 0.4, 'sawtooth', 0.16, -12, this.ac.currentTime + i * 0.3)); this.noise(0.3, 0.08); break;
+      case 'throw':  this.noise(0.08, 0.09); this.tone(700, 0.12, 'triangle', 0.06, -400); break;
+      case 'bossHit': this.noise(0.14, 0.18); this.tone(120, 0.2, 'sawtooth', 0.14, -70); this.tone(880, 0.1, 'square', 0.08, 200); break;
     }
   },
   // 심플한 8비트풍 BGM 루프
@@ -203,6 +212,7 @@ let firstRunEver = !save.introSeen;
 
 /* ---------------- 게임 시작/종료 ---------------- */
 function startGame() {
+  ensureMissions();
   run = {
     t: 0, dist: 0, coins: 0, catches: 0, items: 0, stage: 0,
     combo: 0, comboT: 0, bestCombo: 0,
@@ -212,6 +222,12 @@ function startGame() {
     obstacles: [], coinsArr: [], powerups: [], particles: [], floats: [],
     slowmo: 0, shake: 0, theme: 0, hintT: firstRunEver ? 6 : 2.5,
     caughtAnim: null,
+    feverT: 0, feverCd: 0,           // 피버 타임
+    mercyT: 0, hitTimes: [],         // 판 내 자비 구간 (플레이어에게 비노출)
+    revived: false, settled: false,  // 이어하기 / 결과 정산 여부
+    bestNotified: false,             // 최고기록 돌파 배너 1회
+    missionReward: 0, streakBonus: 0,
+    boss: null, bossPending: 0, projectiles: [], // 보스전
   };
   const maxHearts = 3 + save.up.heart;
   P = {
@@ -225,12 +241,74 @@ function startGame() {
 
 function baseSpeed() { return 340 + save.up.shoe * 22; }
 
+// 숨겨진 동적 난이도: 연패하면 살짝 느려지고, 잘하면 살짝 빨라진다 (0.88x ~ 1.18x)
+function diffMod() { return clamp(1 + save.skill * 0.03, 0.88, 1.18); }
+
 function currentScore() {
   if (!run) return 0;
   return Math.floor(run.dist * 3 + run.coins * 20 + run.catches * 700 + run.stage * 1500 + run.bestCombo * 15);
 }
 
-function endGame() {
+/* ---------------- 일일 미션 / 출석 ---------------- */
+const MISSION_DEFS = [
+  { k: 'dist',  goals: [1000, 1500, 2500], rewards: [100, 150, 250] },
+  { k: 'catch', goals: [3, 5, 8],          rewards: [120, 200, 300] },
+  { k: 'coins', goals: [200, 300, 500],    rewards: [100, 150, 250] },
+  { k: 'combo', goals: [20, 30, 40],       rewards: [100, 150, 250] },
+];
+function todayStr(offsetDays) {
+  const d = new Date(Date.now() + (offsetDays || 0) * 86400000);
+  return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+}
+function ensureMissions() {
+  const d = todayStr();
+  if (!save.missions || save.missions.date !== d) {
+    const tier = save.skill >= 3 ? 2 : save.skill >= 0 ? 1 : 0; // 실력에 맞는 목표 (플로우 유지)
+    const defs = [...MISSION_DEFS].sort(() => Math.random() - 0.5).slice(0, 3);
+    save.missions = {
+      date: d,
+      list: defs.map(df => ({ k: df.k, goal: df.goals[tier], reward: df.rewards[tier], p: 0, done: false })),
+    };
+    persist();
+  }
+}
+
+const REVIVE_COST = 200;
+
+/* 광고 브리지: 네이티브 앱(Capacitor+AdMob)이 window.AdBridge를 주입하면
+ * 이어하기가 "광고 보고 무료 부활"로 자동 전환된다.
+ * AdBridge 규약: { isRewardedReady(): boolean, showRewarded(onReward: () => void): void } */
+const Ads = {
+  ready() {
+    try { return !!(window.AdBridge && window.AdBridge.isRewardedReady && window.AdBridge.isRewardedReady()); }
+    catch (e) { return false; }
+  },
+  showRewarded(onReward) {
+    try { window.AdBridge.showRewarded(onReward); } catch (e) {}
+  },
+};
+
+function canRevive() { return run && !run.revived && (Ads.ready() || save.bank >= REVIVE_COST); }
+
+function doRevive() {
+  run.revived = true;
+  P.hearts = Math.min(P.maxHearts, 2);
+  P.inv = 2.5;
+  run.mercyT = 6;
+  run.hitTimes = [];
+  run.projectiles.length = 0;
+  run.obstacles = run.obstacles.filter(o => o.x - PX() > 260);
+  persist();
+  Sound.sfx('power');
+  vibrate(40);
+  state = 'play';
+  lastTime = 0;
+}
+
+// 결과 정산: 코인·기록·미션·출석·DDA 갱신 (이어하기를 위해 사망 시점과 분리, 정확히 1회 실행)
+function settleRun() {
+  if (!run || run.settled) return;
+  run.settled = true;
   const score = currentScore();
   save.bank += run.coins;
   save.totalCatches += run.catches;
@@ -238,9 +316,47 @@ function endGame() {
   if (run.dist > save.bestDist) save.bestDist = Math.floor(run.dist);
   save.introSeen = true;
   firstRunEver = false;
+
+  // 일일 미션 진행/보상
+  ensureMissions();
+  for (const m of save.missions.list) {
+    if (m.done) continue;
+    if (m.k === 'dist') m.p += Math.floor(run.dist);
+    else if (m.k === 'catch') m.p += run.catches;
+    else if (m.k === 'coins') m.p += run.coins;
+    else if (m.k === 'combo') m.p = Math.max(m.p, run.bestCombo);
+    if (m.p >= m.goal) {
+      m.done = true;
+      save.bank += m.reward;
+      run.missionReward += m.reward;
+    }
+  }
+
+  // 연속 출석 보너스 (하루 1회)
+  const d = todayStr();
+  if (save.streakDay !== d) {
+    save.streakCount = (save.streakDay === todayStr(-1)) ? (save.streakCount || 0) + 1 : 1;
+    save.streakDay = d;
+    run.streakBonus = Math.min(50 * save.streakCount, 250);
+    save.bank += run.streakBonus;
+  }
+
+  // DDA: 짧게 끝난 판이 2번 이어지면 난이도 완화, 잘 달린 판은 상향
+  const perf = run.dist / 1200 + run.catches * 0.6;
+  if (perf < 0.6) {
+    save.failStreak = (save.failStreak || 0) + 1;
+    if (save.failStreak >= 2) { save.skill = Math.max(-4, save.skill - 1); save.failStreak = 0; }
+  } else {
+    save.failStreak = 0;
+    if (perf > 2.2) save.skill = Math.min(6, save.skill + 1);
+  }
   persist();
+}
+
+function endGame() {
   Sound.sfx('over');
   state = 'over';
+  if (!canRevive()) settleRun(); // 이어하기가 불가능하면 즉시 정산
 }
 
 /* ---------------- 입력 ---------------- */
@@ -303,6 +419,7 @@ window.addEventListener('keydown', (e) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && state === 'play') state = 'pause';
+  if (document.hidden && state === 'over') settleRun(); // 결과 화면에서 이탈해도 보상 보존
 });
 
 /* ---------------- 파티클/플로팅 텍스트 ---------------- */
@@ -325,26 +442,35 @@ function spawnPattern() {
   const x = W + 140;
   const g = GY();
   const O = run.obstacles, C = run.coinsArr, U = run.powerups;
-  const hard = clamp(run.t / 90, 0, 1); // 시간에 따른 난이도
+  const hard = clamp(run.t / 90, 0, 1);            // 시간에 따른 난이도
+  const adv = run.stage >= 1 || run.t > 75;        // 스테이지 1: 구덩이·킥보드 해금
+  const adv2 = run.stage >= 2 || run.t > 150;      // 스테이지 2: 더 빠른 킥보드
 
-  if (r < 0.16) {
-    O.push({ type: 'cone', x, w: 34, h: 46 });
+  if (adv && !run.mercyT && r < 0.10) {
+    // 맨홀 구덩이: 점프로만 회피 (위 코인 아치로 점프 유도)
+    O.push({ type: 'pit', x, w: 100, h: 0 });
+    for (let i = 0; i < 5; i++) C.push({ x: x - 60 + i * 44, y: g - 90 - Math.sin(i / 4 * Math.PI) * 55, ph: i });
+  } else if (adv && !run.mercyT && r < 0.18) {
+    // 폭주 킥보드: 화면 스크롤보다 빠르게 돌진 (펀치 또는 점프)
+    O.push({ type: 'rider', x: x + 220, w: 44, h: 88, vx: 120 + hard * 90 + (adv2 ? 45 : 0), ph: rand(0, TAU) });
   } else if (r < 0.30) {
+    O.push({ type: 'cone', x, w: 34, h: 46 });
+  } else if (r < 0.42) {
     O.push({ type: 'barrier', x, w: 56, h: 62 });
     if (Math.random() < 0.5) for (let i = 0; i < 4; i++) C.push({ x: x - 60 + i * 44, y: g - 130 - Math.sin(i / 3 * Math.PI) * 46, ph: i });
-  } else if (r < 0.42) {
+  } else if (r < 0.52) {
     O.push({ type: 'boxes', x, w: 58, h: 112 });
     C.push({ x: x + 110, y: g - 44, ph: 0 });
     C.push({ x: x + 154, y: g - 44, ph: 1 });
-  } else if (r < 0.52 + hard * 0.06) {
-    // 이단 콤보: 콘 + 뒤이어 장애물
+  } else if (!run.mercyT && r < 0.58 + hard * 0.06 + run.stage * 0.01) {
+    // 이단 콤보: 콘 + 뒤이어 장애물 (자비 구간에는 미출현)
     O.push({ type: 'cone', x, w: 34, h: 46 });
     O.push({ type: Math.random() < 0.5 ? 'barrier' : 'cone', x: x + 250 + rand(0, 80), w: 50, h: 58 });
-  } else if (r < 0.66) {
+  } else if (r < 0.68) {
     // 비둘기 떼: 아래로 지나가거나 펀치
     O.push({ type: 'pigeon', x, w: 52, h: 38, yOff: rand(118, 150), ph: rand(0, TAU) });
     for (let i = 0; i < 5; i++) C.push({ x: x - 40 + i * 44, y: g - 36, ph: i });
-  } else if (r < 0.80) {
+  } else if (r < 0.81) {
     // 코인 아치
     const n = 7;
     for (let i = 0; i < n; i++) C.push({ x: x + i * 46, y: g - 50 - Math.sin(i / (n - 1) * Math.PI) * 105, ph: i });
@@ -352,58 +478,131 @@ function spawnPattern() {
     // 낮은 코인 줄
     for (let i = 0; i < 6; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
   } else {
-    // 파워업
+    // 파워업 (고전 중이면 하트 확률을 몰래 올려준다 — DDA)
     const pr = Math.random();
+    const heartBias = (save.skill < 0 || P.hearts <= 1) ? 0.30 : 0.14;
     let type = 'magnet';
-    if (pr < 0.34) type = 'magnet';
-    else if (pr < 0.62) type = 'shield';
-    else if (pr < 0.86) type = 'boost';
-    else type = 'heart';
+    if (pr < heartBias) type = 'heart';
+    else if (pr < heartBias + 0.28) type = 'magnet';
+    else if (pr < heartBias + 0.52) type = 'shield';
+    else type = 'boost';
     U.push({ type, x, y: g - 70 - rand(0, 60), ph: rand(0, TAU) });
   }
-  run.spawnD = rand(300, 560) + run.speed * 0.38;
+  // 간격: DDA(실력↓ → 넓게) · 자비 구간엔 더 넓게 · 스테이지가 오를수록 촘촘하게
+  const gapMul = clamp(1 - save.skill * 0.05, 0.82, 1.3)
+    * (run.mercyT > 0 ? 1.35 : 1)
+    * (1 - Math.min(0.12, run.stage * 0.03));
+  run.spawnD = (rand(300, 560) + run.speed * 0.38) * gapMul;
 }
 
 /* ---------------- 도둑 ---------------- */
 function spawnThief() {
   // 등장 거리는 화면 폭과 무관하게 380~480px로 제한 (가로모드에서 추격이 늘어지지 않게)
+  const golden = Math.random() < 0.10; // ✨ 황금 도둑: 낮은 확률의 잭팟 (가변 비율 보상)
   run.thief = {
     dx: clamp(W * 0.72, 380, 480), y: GY(), vy: 0,
-    jumpT: rand(0.6, 1.2), escaping: false, gone: false,
+    jumpT: rand(0.6, 1.2), escaping: false, gone: false, golden,
   };
   run.hurtInChase = 0;
   const idx = run.items % 3;
-  addFloat(W * 0.6, GY() - 220, T('thiefFound', ITEM_ICONS[idx], L.items[idx]), '#ffd166', 1.15);
+  if (golden) {
+    Sound.sfx('gold');
+    addFloat(W * 0.6, GY() - 220, T('goldThief'), '#ffe066', 1.3);
+  } else {
+    addFloat(W * 0.6, GY() - 220, T('thiefFound', ITEM_ICONS[idx], L.items[idx]), '#ffd166', 1.15);
+  }
 }
 
 function catchThief() {
   const idx = run.items % 3;
+  const golden = run.thief.golden;
   run.items++; run.catches++;
   run.combo += 15; run.comboT = 3;
   run.bestCombo = Math.max(run.bestCombo, run.combo);
-  const bonus = 100 + run.stage * 50;
+  const bonus = (100 + run.stage * 50) * (golden ? 4 : 1);
   run.coins += bonus;
   run.slowmo = 0.55; run.shake = 0.35;
-  Sound.sfx('catch');
-  vibrate(60);
+  Sound.sfx(golden ? 'gold' : 'catch');
+  vibrate(golden ? 120 : 60);
   const tx = PX() + run.thief.dx;
-  burst(tx, GY() - 60, 26, '#ffd166', 4, true);
-  burst(tx, GY() - 60, 14, '#ff8fb3', 3, true);
-  addFloat(W / 2, H * 0.32, T('gotItem', ITEM_ICONS[idx], L.items[idx], bonus), '#ffd166', 1.5);
+  burst(tx, GY() - 60, golden ? 40 : 26, '#ffd166', 4, true);
+  burst(tx, GY() - 60, 14, golden ? '#fff1c4' : '#ff8fb3', 3, true);
+  if (golden) {
+    addFloat(W / 2, H * 0.32, T('goldCatch', bonus), '#ffe066', 1.6);
+    // 황금 도둑은 파워업도 떨군다
+    const drop = ['magnet', 'shield', 'boost', 'heart'][Math.floor(rand(0, 4))];
+    run.powerups.push({ type: drop, x: PX() + 260, y: GY() - 80, ph: 0 });
+  } else {
+    addFloat(W / 2, H * 0.32, T('gotItem', ITEM_ICONS[idx], L.items[idx], bonus), '#ffd166', 1.5);
+  }
   run.caughtAnim = { x: tx, y: GY(), t: 0 };
   run.thief = null;
   run.thiefTimer = rand(9, 14);
 
   if (run.items % 3 === 0) {
-    // 세 가지 모두 회수 → 스테이지 클리어
+    // 세 가지 모두 회수 → 스테이지 클리어 (성공은 곧 난이도 상승)
     run.stage++;
     run.theme = (run.theme + 1) % THEMES.length;
     P.hearts = Math.min(P.maxHearts, P.hearts + 1);
     run.coins += 300;
+    save.skill = Math.min(6, save.skill + 1);
     Sound.sfx('clear');
     addFloat(W / 2, H * 0.45, T('stageClear'), '#7bffc8', 1.4);
     addFloat(W / 2, H * 0.45 + 44, T('stageClear2'), '#ffffff', 1.0);
+    // 스테이지 3, 6, 9… 클리어 직후엔 도둑 두목이 직접 나선다!
+    if (run.stage % 3 === 0) run.bossPending = 3.5;
   }
+}
+
+/* ---------------- 보스전: 도둑 두목 ---------------- */
+function spawnBoss() {
+  run.boss = {
+    dx: clamp(W * 0.72, 380, 480), y: GY(), vy: 0,
+    hp: 3 + Math.min(3, Math.floor(run.stage / 3)), // 3방 → 최대 6방
+    maxHp: 3 + Math.min(3, Math.floor(run.stage / 3)),
+    throwT: 2.4, jumpT: 1.1, staggerT: 0, hurtCount: 0, escaping: false,
+  };
+  run.boss.maxHp = run.boss.hp;
+  run.shake = 0.35;
+  Sound.sfx('boss');
+  vibrate(120);
+  addFloat(W / 2, H * 0.3, T('bossAppear'), '#ff6b6b', 1.5);
+}
+
+function bossDefeated() {
+  const b = run.boss;
+  const reward = 500 + run.stage * 100;
+  run.coins += reward;
+  run.catches++;
+  run.combo += 30; run.comboT = 3;
+  run.bestCombo = Math.max(run.bestCombo, run.combo);
+  P.hearts = Math.min(P.maxHearts, P.hearts + 2);
+  run.feverT = 8; run.feverCd = 25;
+  run.slowmo = 0.8; run.shake = 0.5;
+  Sound.sfx('gold');
+  vibrate(150);
+  const tx = PX() + b.dx;
+  burst(tx, GY() - 70, 50, '#ffd166', 5, true);
+  burst(tx, GY() - 70, 24, '#ff6b6b', 4, true);
+  addFloat(W / 2, H * 0.32, T('bossDown', reward), '#ffe066', 1.7);
+  run.caughtAnim = { x: tx, y: GY(), t: 0, boss: true };
+  run.boss = null;
+  run.projectiles.length = 0;
+  run.thiefTimer = rand(9, 14);
+}
+
+function bossEscape() {
+  run.boss.escaping = true;
+  Sound.sfx('escape');
+  addFloat(W * 0.6, GY() - 240, T('bossTaunt'), '#ff8fb3', 1.2);
+}
+
+// 보스전 중에는 장애물 대신 코인/회복 위주로만 스폰 (결투에 집중)
+function spawnBossPattern() {
+  const x = W + 140, g = GY(), C = run.coinsArr;
+  for (let i = 0; i < 5; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
+  if (Math.random() < 0.14) run.powerups.push({ type: 'heart', x: x + 280, y: g - 90, ph: 0 });
+  run.spawnD = rand(500, 800) + run.speed * 0.4;
 }
 
 function thiefEscape() {
@@ -424,7 +623,11 @@ function hurt(obs) {
   }
   P.hearts--;
   P.inv = 1.6; P.hurtT = 0.5;
-  run.combo = 0; run.shake = 0.4;
+  run.combo = 0; run.feverT = 0; run.shake = 0.4;
+  // 판 내 자비: 12초 안에 2번 맞으면 잠시 패턴을 느슨하게 (플레이어에게 비노출)
+  run.hitTimes.push(run.t);
+  run.hitTimes = run.hitTimes.filter(t => run.t - t < 12);
+  if (run.hitTimes.length >= 2) { run.mercyT = 8; run.hitTimes = []; }
   Sound.sfx('hurt');
   vibrate(90);
   burst(PX(), P.y - 40, 12, '#ff6b6b', 3);
@@ -433,6 +636,11 @@ function hurt(obs) {
     run.hurtInChase++;
     if (run.hurtInChase >= 2) thiefEscape();
   }
+  if (run.boss && !run.boss.escaping) {
+    run.boss.dx += 180;
+    run.boss.hurtCount++;
+    if (run.boss.hurtCount >= 3) bossEscape();
+  }
   if (P.hearts <= 0) endGame();
 }
 
@@ -440,7 +648,7 @@ function smash(o, color) {
   o.dead = true;
   Sound.sfx('smash');
   burst(o.x, GY() - o.h / 2 - (o.yOff || 0), 16, color || '#d9a05b', 4);
-  const mult = 1 + Math.floor(run.combo / 10);
+  const mult = 1 + Math.floor(run.combo / 10) + (run.feverT > 0 ? 1 : 0);
   run.coins += 3 * mult;
   run.combo += 2; run.comboT = 3;
   addFloat(o.x, GY() - o.h - 20 - (o.yOff || 0), `+${3 * mult}`, '#ffd166', 0.9);
@@ -455,11 +663,29 @@ function updatePlay(dt0) {
   run.t += dt;
   run.hintT = Math.max(0, run.hintT - dt0);
 
-  // 속도
-  const target = (baseSpeed() + Math.min(430, run.t * 7) + run.stage * 25) * (P.boostT > 0 ? 1.55 : 1);
+  // 속도: 시간 + 스테이지(성공할수록 빠름) × 숨겨진 DDA 보정
+  const target = (baseSpeed() + Math.min(430, run.t * 7) + run.stage * 40) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
   run.speed = lerp(run.speed, target, 1 - Math.pow(0.001, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
+
+  // 피버 타임: 30콤보 도달 시 8초간 코인 배수 +1
+  run.mercyT = Math.max(0, run.mercyT - dt);
+  run.feverT = Math.max(0, run.feverT - dt);
+  run.feverCd = Math.max(0, run.feverCd - dt);
+  if (run.combo >= 30 && run.feverT <= 0 && run.feverCd <= 0) {
+    run.feverT = 8; run.feverCd = 25;
+    Sound.sfx('fever');
+    vibrate(50);
+    addFloat(W / 2, H * 0.3, T('fever'), '#ffe066', 1.5);
+  }
+
+  // 최고 기록 돌파 순간 (판당 1회)
+  if (!run.bestNotified && save.best > 0 && currentScore() > save.best) {
+    run.bestNotified = true;
+    Sound.sfx('clear');
+    addFloat(W / 2, H * 0.38, T('bestBreak'), '#7bffc8', 1.4);
+  }
 
   // 플레이어 물리
   P.vy += 2400 * dt;
@@ -477,17 +703,33 @@ function updatePlay(dt0) {
   run.comboT -= dt;
   if (run.comboT <= 0) run.combo = Math.max(0, run.combo - Math.ceil(run.combo * dt * 2));
 
-  // 스폰
+  // 스폰 (보스전 중에는 전용 패턴)
   run.spawnD -= sp * dt;
-  if (run.spawnD <= 0) spawnPattern();
+  if (run.spawnD <= 0) {
+    if (run.boss || run.bossPending > 0) spawnBossPattern();
+    else spawnPattern();
+  }
 
   const px = PX(), g = GY();
   const pTop = P.y - 82, pL = px - 17, pR = px + 17;
 
   // 장애물
   for (const o of run.obstacles) {
-    o.x -= sp * dt;
+    o.x -= (sp + (o.vx || 0)) * dt;
     if (o.dead) continue;
+    const oL = o.x - o.w / 2, oR = o.x + o.w / 2;
+
+    // 맨홀 구덩이: 지상에서 밟으면 피격 (점프로만 회피, 펀치 불가)
+    if (o.type === 'pit') {
+      if (!o.hit && P.ground && px > oL + 6 && px < oR - 6 && P.boostT <= 0) {
+        o.hit = true;
+        hurt(null);
+        if (state !== 'play') return;
+        P.vy = -520; P.ground = false; // 구덩이에서 튀어나오는 연출
+      }
+      continue;
+    }
+
     let oTop, oBot;
     if (o.type === 'pigeon') {
       const bob = Math.sin(globalT * 4 + o.ph) * 8;
@@ -496,25 +738,39 @@ function updatePlay(dt0) {
     } else {
       oBot = g; oTop = g - o.h;
     }
-    const oL = o.x - o.w / 2, oR = o.x + o.w / 2;
     // 펀치 히트
-    if (P.punchT > 0.1 && (o.type === 'boxes' || o.type === 'pigeon' || o.type === 'cone')) {
+    if (P.punchT > 0.1 && (o.type === 'boxes' || o.type === 'pigeon' || o.type === 'cone' || o.type === 'rider')) {
       if (oL < px + 105 && oR > px + 10 && oTop < P.y + 5 && oBot > P.y - 150) {
-        smash(o, o.type === 'pigeon' ? '#cfd6ff' : '#d9a05b');
+        smash(o, o.type === 'pigeon' ? '#cfd6ff' : o.type === 'rider' ? '#8fe3ff' : '#d9a05b');
         continue;
       }
     }
     // 충돌
     if (oL < pR && oR > pL && oTop < P.y && oBot > pTop) {
       if (P.boostT > 0) { smash(o, '#ffd166'); continue; }
+      o.nm = true; // 피격한 장애물은 니어미스 대상에서 제외
       hurt(o);
       if (state !== 'play') return;
     }
+    // 니어미스 추적: 겹치는 동안 발끝~장애물 상단의 최소 간격 기록
+    if (o.type !== 'pigeon' && !o.nm) {
+      if (oL < pR && oR > pL && P.y < oTop) {
+        const c = oTop - P.y;
+        o.minC = o.minC === undefined ? c : Math.min(o.minC, c);
+      } else if (oR < pL && o.minC !== undefined && o.minC < 26) {
+        // 아슬아슬하게 넘었다! 작은 보상 (니어미스 심리 — 긴장 → 안도 → 보상)
+        o.nm = true;
+        run.coins += 5;
+        run.combo += 3; run.comboT = 3;
+        Sound.sfx('near');
+        addFloat(px, P.y - 115, T('nearMiss') + ' +5', '#8fe3ff', 0.9);
+      }
+    }
   }
-  run.obstacles = run.obstacles.filter(o => !o.dead && o.x > -120);
+  run.obstacles = run.obstacles.filter(o => !o.dead && o.x > -160);
 
-  // 코인
-  const mult = 1 + Math.floor(run.combo / 10);
+  // 코인 (피버 중엔 배수 +1)
+  const mult = 1 + Math.floor(run.combo / 10) + (run.feverT > 0 ? 1 : 0);
   for (const c of run.coinsArr) {
     c.x -= sp * dt;
     if (P.magnetT > 0) {
@@ -555,7 +811,85 @@ function updatePlay(dt0) {
   }
   run.powerups = run.powerups.filter(u => !u.dead && u.x > -60);
 
-  // 도둑
+  // 보스 등장 대기
+  if (run.bossPending > 0) {
+    run.bossPending -= dt;
+    if (run.bossPending <= 0 && !run.boss) spawnBoss();
+  }
+
+  // 보스전
+  if (run.boss) {
+    const b = run.boss;
+    b.staggerT = Math.max(0, b.staggerT - dt);
+    const factor = b.escaping ? 1.45 : (b.staggerT > 0 ? 1.0 : 0.90);
+    b.dx += (factor - 1) * sp * dt;
+    b.jumpT -= dt;
+    b.vy += 2600 * dt;
+    b.y += b.vy * dt;
+    if (b.y >= g) { b.y = g; b.vy = 0; if (b.jumpT <= 0 && !b.escaping) { b.vy = -rand(380, 560); b.jumpT = rand(0.9, 1.7); } }
+    // 반격 투척
+    if (!b.escaping && b.staggerT <= 0 && b.dx < W * 0.85) {
+      b.throwT -= dt;
+      if (b.throwT <= 0) {
+        b.throwT = rand(1.7, 2.7) - Math.min(0.8, run.stage * 0.05);
+        run.projectiles.push({
+          x: px + b.dx - 24, y: b.y - 62,
+          vx: -(sp * 0.4 + rand(170, 260)), vy: rand(-430, -260),
+          spin: rand(0, TAU), t: 0,
+        });
+        Sound.sfx('throw');
+      }
+    }
+    // 펀치 타격
+    if (!b.escaping && P.punchT > 0.1 && b.dx < 115 && b.staggerT <= 0) {
+      b.hp--;
+      b.staggerT = 0.55;
+      run.slowmo = 0.25; run.shake = 0.3;
+      Sound.sfx('bossHit');
+      vibrate(70);
+      burst(px + b.dx, g - 70, 18, '#ffd166', 4, true);
+      run.coins += 20;
+      run.combo += 5; run.comboT = 3;
+      run.bestCombo = Math.max(run.bestCombo, run.combo);
+      if (b.hp <= 0) bossDefeated();
+      else {
+        b.dx += 260;
+        addFloat(px + Math.min(b.dx, W * 0.7), g - 175, ['💢', '😤', '🤬'][Math.floor(rand(0, 3))], '#ffffff', 1.3);
+      }
+    }
+    if (run.boss && run.boss.escaping && run.boss.dx > W + 300) {
+      run.boss = null;
+      run.projectiles.length = 0;
+      run.thiefTimer = rand(8, 12);
+    }
+  }
+
+  // 보스 투척물
+  for (const pj of run.projectiles) {
+    pj.t += dt;
+    pj.x += (pj.vx - sp * 0.25) * dt;
+    pj.y += pj.vy * dt;
+    pj.vy += 1500 * dt;
+    // 펀치로 격추
+    if (P.punchT > 0.1 && pj.x > px + 10 && pj.x < px + 105 && pj.y > P.y - 150 && pj.y < P.y + 5) {
+      pj.dead = true;
+      run.coins += 5;
+      Sound.sfx('smash');
+      burst(pj.x, pj.y, 10, '#8fe3ff', 3, true);
+      addFloat(pj.x, pj.y - 20, '+5', '#ffd166', 0.8);
+      continue;
+    }
+    // 피격
+    if (Math.hypot(pj.x - px, pj.y - (P.y - 46)) < 38) {
+      pj.dead = true;
+      hurt(null);
+      if (state !== 'play') return;
+    }
+    if (pj.y > g + 10) { pj.dead = true; burst(pj.x, g, 6, '#9aa2b8', 3); }
+  }
+  run.projectiles = run.projectiles.filter(p => !p.dead && p.x > -80);
+
+  // 도둑 (보스전 중에는 일반 도둑 미등장)
   if (run.thief) {
     const th = run.thief;
     const factor = th.escaping ? 1.4 : 0.91;
@@ -573,7 +907,7 @@ function updatePlay(dt0) {
     if (!th.escaping && P.punchT > 0.1 && th.dx < 115) {
       catchThief();
     }
-  } else {
+  } else if (!run.boss && run.bossPending <= 0) {
     run.thiefTimer -= dt;
     if (run.thiefTimer <= 0) spawnThief();
   }
@@ -792,7 +1126,7 @@ function drawThief(x, y, opt) {
     ctx.stroke();
   }
   // 후드 몸통
-  ctx.fillStyle = '#2e2e4a';
+  ctx.fillStyle = o.boss ? '#6e1f2e' : o.golden ? '#b8862e' : '#2e2e4a';
   rr(-16, -64, 32, 38, 10); ctx.fill();
   // 훔친 가방
   ctx.fillStyle = '#c9762f';
@@ -800,8 +1134,23 @@ function drawThief(x, y, opt) {
   ctx.strokeStyle = '#8a4d1a'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(-23, -58, 8, Math.PI, 0); ctx.stroke();
   // 후드 머리
-  ctx.fillStyle = '#3a3a5c';
+  ctx.fillStyle = o.boss ? '#8f2635' : o.golden ? '#dba844' : '#3a3a5c';
   ctx.beginPath(); ctx.arc(6, -76, 13, 0, TAU); ctx.fill();
+  // 보스: 금목걸이 + 선글라스
+  if (o.boss) {
+    ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, -58, 10, 0.2, Math.PI - 0.2); ctx.stroke();
+    ctx.fillStyle = '#0a0a14';
+    rr(2, -81, 16, 7, 3); ctx.fill();
+  }
+  // 황금 도둑 반짝임
+  if (o.golden) {
+    ctx.fillStyle = `rgba(255,230,120,${0.5 + 0.5 * Math.sin(globalT * 8)})`;
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('✨', -20 + Math.sin(globalT * 3) * 8, -95);
+    ctx.fillText('✨', 18, -100 + Math.cos(globalT * 4) * 6);
+  }
   // 마스크 얼굴
   ctx.fillStyle = '#12121f';
   ctx.beginPath(); ctx.arc(9, -75, 8, -0.6, 0.9); ctx.lineTo(9, -75); ctx.fill();
@@ -861,6 +1210,51 @@ function drawObstacle(o) {
     ctx.font = 'bold 13px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('택배', o.x, g - 52);
+  } else if (o.type === 'pit') {
+    // 맨홀 구덩이
+    ctx.fillStyle = '#04050f';
+    rr(o.x - o.w / 2, g + 2, o.w, 26, 6); ctx.fill();
+    ctx.fillStyle = '#ffb020';
+    for (const side of [-1, 1]) {
+      const ex = o.x + side * (o.w / 2);
+      ctx.fillRect(ex - 5, g - 4, 10, 6);
+    }
+    ctx.strokeStyle = 'rgba(255,176,32,0.65)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath(); ctx.moveTo(o.x - o.w / 2, g - 1); ctx.lineTo(o.x + o.w / 2, g - 1); ctx.stroke();
+    ctx.setLineDash([]);
+  } else if (o.type === 'rider') {
+    // 폭주 킥보드
+    const wob = Math.sin(globalT * 9 + o.ph) * 2;
+    ctx.save();
+    ctx.translate(o.x, g + wob * 0.4);
+    // 속도선
+    ctx.strokeStyle = 'rgba(143,227,255,0.5)';
+    ctx.lineWidth = 3; ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath(); ctx.moveTo(24 + i * 9, -22 - i * 22); ctx.lineTo(46 + i * 9, -22 - i * 22); ctx.stroke();
+    }
+    // 바퀴 + 발판
+    ctx.fillStyle = '#222738';
+    ctx.beginPath(); ctx.arc(-16, -7, 7, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(14, -7, 7, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5ad1ff';
+    rr(-20, -16, 38, 6, 3); ctx.fill();
+    // 핸들
+    ctx.strokeStyle = '#5ad1ff'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-14, -14); ctx.lineTo(-18, -62); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-25, -62); ctx.lineTo(-11, -62); ctx.stroke();
+    // 라이더 (헬멧 쓴 실루엣)
+    ctx.strokeStyle = '#3c4266'; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.moveTo(4, -16); ctx.lineTo(0, -44 + wob); ctx.stroke();
+    ctx.fillStyle = '#3c4266';
+    rr(-8, -60 + wob, 20, 24, 8); ctx.fill();
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath(); ctx.arc(-2, -68 + wob, 10, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#2b1b12';
+    ctx.fillRect(-10, -71 + wob, 10, 6);
+    ctx.restore();
   } else if (o.type === 'pigeon') {
     const bob = Math.sin(globalT * 4 + o.ph) * 8;
     const y = g - o.yOff + bob;
@@ -959,10 +1353,25 @@ function drawHUD() {
 
   // 콤보
   if (run.combo >= 5) {
-    const mult = 1 + Math.floor(run.combo / 10);
+    const mult = 1 + Math.floor(run.combo / 10) + (run.feverT > 0 ? 1 : 0);
     ctx.font = `bold ${24 + Math.min(10, run.combo / 5)}px sans-serif`;
-    ctx.fillStyle = '#ffd166';
+    ctx.fillStyle = run.feverT > 0 ? '#ffe066' : '#ffd166';
     ctx.fillText(`${run.combo} COMBO${mult > 1 ? `  x${mult}` : ''}`, W / 2, 74);
+  }
+  // 피버 표시 (은은한 골드 테두리 + FEVER 펄스)
+  if (run.feverT > 0) {
+    const a = 0.25 + 0.15 * Math.sin(globalT * 8);
+    ctx.strokeStyle = `rgba(255,224,102,${a})`;
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, W - 10, H - 10);
+    const pulse = 1 + Math.sin(globalT * 9) * 0.1;
+    ctx.save();
+    ctx.translate(W / 2, 104);
+    ctx.scale(pulse, pulse);
+    ctx.font = '900 18px sans-serif';
+    ctx.fillStyle = '#ffe066';
+    ctx.fillText(`⚡ ${T('feverLbl')} ${Math.ceil(run.feverT)}s`, 0, 0);
+    ctx.restore();
   }
 
   // 되찾은 물건 슬롯 (우측 상단)
@@ -1018,6 +1427,20 @@ function drawHUD() {
     ctx.globalAlpha = 1;
   }
 
+  // 보스 접근 시 펀치 안내
+  if (run.boss && !run.boss.escaping && run.boss.dx < 130) {
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillStyle = '#ff6b6b';
+    ctx.textAlign = 'center';
+    const bp = 1 + Math.sin(globalT * 10) * 0.08;
+    ctx.save();
+    ctx.translate(W / 2, H * 0.25);
+    ctx.scale(bp, bp);
+    fitFont(T('promptPunch'), W * 0.86, 26);
+    ctx.fillText(T('promptPunch'), 0, 0);
+    ctx.restore();
+  }
+
   // 도둑 추격 안내
   if (run.thief && !run.thief.escaping) {
     if (run.thief.dx < 130) {
@@ -1068,12 +1491,51 @@ function drawPlayScene() {
 
   // 도둑
   if (run.thief) {
-    drawThief(PX() + run.thief.dx, run.thief.y, { phase: run.dist * 0.11 });
+    drawThief(PX() + run.thief.dx, run.thief.y, { phase: run.dist * 0.11, golden: run.thief.golden });
+  }
+  // 도둑 두목 (1.4배 크기 + 머리 위 HP)
+  if (run.boss) {
+    const b = run.boss;
+    const bx = PX() + b.dx;
+    ctx.save();
+    ctx.translate(bx, b.y);
+    ctx.scale(1.4, 1.4);
+    ctx.translate(-bx, -b.y);
+    drawThief(bx, b.y, { phase: run.dist * 0.1, boss: true, tumble: b.staggerT > 0.3 ? Math.sin(globalT * 40) * 0.12 : 0 });
+    ctx.restore();
+    // HP 핍
+    ctx.textAlign = 'center';
+    ctx.font = '15px sans-serif';
+    for (let i = 0; i < b.maxHp; i++) {
+      ctx.globalAlpha = i < b.hp ? 1 : 0.2;
+      ctx.fillText('🔴', bx - (b.maxHp - 1) * 9 + i * 18, b.y - 158);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // 보스 투척물 (빙글빙글 도는 쓰레기통 뚜껑)
+  for (const pj of run.projectiles) {
+    ctx.save();
+    ctx.translate(pj.x, pj.y);
+    ctx.rotate(pj.spin + pj.t * 14);
+    ctx.fillStyle = '#8a92aa';
+    ctx.beginPath(); ctx.ellipse(0, 0, 15, 13, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#6b7390';
+    ctx.beginPath(); ctx.arc(0, 0, 7, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(14, 0); ctx.stroke();
+    ctx.restore();
   }
   // 잡힌 도둑 (나뒹굴기)
   if (run.caughtAnim) {
     const a = run.caughtAnim;
-    drawThief(a.x + a.t * 130, a.y - Math.sin(Math.min(1, a.t) * Math.PI) * 90, { tumble: a.t * 9 });
+    ctx.save();
+    if (a.boss) {
+      const cx = a.x + a.t * 130, cy = a.y - Math.sin(Math.min(1, a.t) * Math.PI) * 90;
+      ctx.translate(cx, cy); ctx.scale(1.4, 1.4); ctx.translate(-cx, -cy);
+    }
+    drawThief(a.x + a.t * 130, a.y - Math.sin(Math.min(1, a.t) * Math.PI) * 90, { tumble: a.t * 9, boss: a.boss });
+    ctx.restore();
     if (a.t < 0.5) {
       ctx.font = 'bold 34px sans-serif';
       ctx.textAlign = 'center';
@@ -1154,11 +1616,49 @@ function drawMenu() {
   ctx.fillText(recTxt, W / 2, ty + 72);
   ctx.fillStyle = '#ffd166';
   ctx.font = 'bold 17px sans-serif';
-  ctx.fillText(T('bank', save.bank.toLocaleString()), W / 2, ty + 100);
+  let bankLine = T('bank', save.bank.toLocaleString());
+  if (save.streakCount > 1) bankLine += '   ' + T('streakLbl', save.streakCount);
+  fitFont(bankLine, W * 0.92, 17);
+  ctx.fillText(bankLine, W / 2, ty + 100);
+
+  // 🎯 오늘의 미션 (세로 화면: 상세 3줄 / 가로 화면: 요약 1줄)
+  ensureMissions();
+  const ml = save.missions.list;
+  const doneCnt = ml.filter(m => m.done).length;
+  if (H >= 700) {
+    const pw = Math.min(340, W * 0.8);
+    const mx = W / 2 - pw / 2;
+    const myTop = ty + 122;
+    ctx.fillStyle = 'rgba(20,22,55,0.75)';
+    rr(mx, myTop, pw, 96, 12); ctx.fill();
+    ctx.fillStyle = '#aab0d8';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(T('missionTitle'), mx + 14, myTop + 20);
+    ml.forEach((m, i) => {
+      const yy = myTop + 40 + i * 20;
+      ctx.font = '13px sans-serif';
+      ctx.fillStyle = m.done ? '#7bffc8' : '#ffffff';
+      const label = (m.done ? '✅ ' : '▫️ ') + T('m_' + m.k, m.goal) + (m.done ? '' : `  (${Math.min(m.p, m.goal)}/${m.goal})`);
+      fitFont(label, pw - 90, 13, m.done ? 'bold' : 'normal');
+      ctx.fillText(label, mx + 14, yy);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ffd166';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillText('💰' + m.reward, mx + pw - 12, yy);
+      ctx.textAlign = 'left';
+    });
+    ctx.textAlign = 'center';
+  } else {
+    ctx.fillStyle = '#aab0d8';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText(T('missionSummary', doneCnt, ml.length), W / 2, ty + 124);
+  }
 
   const bw = Math.min(320, W * 0.72);
   const bx = W / 2 - bw / 2;
   let by = H * 0.52;
+  if (H >= 700) by = Math.max(by, ty + 240);
   button(bx, by, bw, 62, T('btnStart'), () => { startGame(); }, { size: 24 });
   by += 76;
   button(bx, by, bw, 52, T('btnShop'), () => { state = 'shop'; }, { color: '#4a55c9' });
@@ -1268,7 +1768,7 @@ function drawPause() {
   ctx.fillText(T('pauseTitle'), W / 2, H * 0.35);
   const bw = Math.min(300, W * 0.7);
   button(W / 2 - bw / 2, H * 0.46, bw, 58, T('btnResume'), () => { state = 'play'; lastTime = 0; }, { size: 22 });
-  button(W / 2 - bw / 2, H * 0.46 + 72, bw, 50, T('btnGiveUp'), () => { endGame(); state = 'menu'; }, { color: '#2a2d45', size: 18 });
+  button(W / 2 - bw / 2, H * 0.46 + 72, bw, 50, T('btnGiveUp'), () => { endGame(); settleRun(); state = 'menu'; }, { color: '#2a2d45', size: 18 });
 }
 
 function drawOver() {
@@ -1305,9 +1805,52 @@ function drawOver() {
   fitFont(statsTxt, W * 0.94, 17);
   ctx.fillText(statsTxt, W / 2, H * 0.52);
 
+  // 미션/출석 보상 알림 (미정산이면 확정 예정 보상을 미리 표시)
+  let mReward = run.missionReward, sBonus = run.streakBonus;
+  if (!run.settled) {
+    ensureMissions();
+    for (const m of save.missions.list) {
+      if (m.done) continue;
+      const p = m.k === 'dist' ? m.p + Math.floor(run.dist)
+        : m.k === 'catch' ? m.p + run.catches
+        : m.k === 'coins' ? m.p + run.coins
+        : Math.max(m.p, run.bestCombo);
+      if (p >= m.goal) mReward += m.reward;
+    }
+    if (save.streakDay !== todayStr()) {
+      const c = (save.streakDay === todayStr(-1)) ? (save.streakCount || 0) + 1 : 1;
+      sBonus = Math.min(50 * c, 250);
+    }
+  }
+  if (mReward > 0 || sBonus > 0) {
+    const parts = [];
+    if (mReward > 0) parts.push(T('missionDone', mReward));
+    if (sBonus > 0) parts.push(T('streakBonus', sBonus));
+    ctx.fillStyle = '#7bffc8';
+    const bonusTxt = parts.join('   ');
+    fitFont(bonusTxt, W * 0.92, 15);
+    ctx.fillText(bonusTxt, W / 2, H * 0.52 + 26);
+  }
+
   const bw = Math.min(300, W * 0.7);
-  button(W / 2 - bw / 2, H * 0.6, bw, 60, T('btnRetry'), () => { startGame(); }, { size: 23 });
-  button(W / 2 - bw / 2, H * 0.6 + 74, bw, 50, T('btnMenu'), () => { state = 'menu'; }, { color: '#4a55c9', size: 18 });
+  let by = H * 0.6;
+  // ❤️ 이어하기 (판당 1회): 광고 브리지가 있으면 무료(광고), 없으면 코인 소모
+  if (canRevive()) {
+    if (Ads.ready()) {
+      button(W / 2 - bw / 2, by, bw, 56, T('reviveAd'), () => {
+        Ads.showRewarded(() => { doRevive(); });
+      }, { color: '#e8a03c', size: 18 });
+    } else {
+      button(W / 2 - bw / 2, by, bw, 56, `${T('revive')}  💰${REVIVE_COST}`, () => {
+        save.bank -= REVIVE_COST;
+        doRevive();
+      }, { color: '#e8a03c', size: 20 });
+    }
+    by += 66;
+  }
+  button(W / 2 - bw / 2, by, bw, 56, T('btnRetry'), () => { settleRun(); startGame(); }, { size: 22 });
+  by += 66;
+  button(W / 2 - bw / 2, by, bw, 48, T('btnMenu'), () => { settleRun(); state = 'menu'; }, { color: '#4a55c9', size: 18 });
 }
 
 /* ============================================================

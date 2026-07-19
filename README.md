@@ -67,7 +67,56 @@ npx cap open android       # AAB 빌드 → Play Console 업로드
 - 아이콘: `icon.svg`를 1024×1024 PNG로 내보내 각 플랫폼 에셋으로 사용
 - iOS는 `Status Bar Hidden` + `UIRequiresFullScreen` 설정 권장
 - 진동은 Capacitor Haptics 플러그인으로 교체하면 iOS에서도 동작
-- 수익화가 필요하면 부활권/코인팩 IAP, 보상형 광고(부활·코인 2배) 지점이 게임오버 화면에 이미 설계상 준비되어 있음
+
+## 수익화: 보상형 광고로 무료 부활 (AdMob)
+
+게임오버 화면의 "이어하기"는 이미 광고 연동 지점이 준비되어 있습니다.
+`window.AdBridge` 객체를 주입하면 코인 부활 버튼이 자동으로
+**"📺 광고 보고 무료 부활"** 버튼으로 바뀝니다.
+
+```js
+// AdBridge 규약 (게임이 기대하는 인터페이스)
+window.AdBridge = {
+  isRewardedReady: () => boolean,        // 보상형 광고 로드 완료 여부
+  showRewarded: (onReward) => void,      // 광고 표시, 끝까지 시청 시 onReward() 호출
+};
+```
+
+### AdMob 연동 절차 (Capacitor 앱)
+
+1. **AdMob 계정** — https://admob.google.com 가입 (Google 계정 + 수익 지급용 은행 계좌)
+2. **앱 등록** — AdMob 콘솔에서 앱 추가 → 앱 ID 발급 (`ca-app-pub-XXXX~YYYY`)
+3. **광고 단위 생성** — "보상형(Rewarded)" 광고 단위 → 광고 단위 ID 발급
+4. **플러그인 설치**
+   ```bash
+   npm install @capacitor-community/admob
+   npx cap sync
+   ```
+5. **브리지 구현** — 앱 시작 시 아래처럼 AdBridge를 주입:
+   ```js
+   import { AdMob, RewardAdPluginEvents } from '@capacitor-community/admob';
+   await AdMob.initialize();
+   let ready = false;
+   async function load() {
+     await AdMob.prepareRewardVideoAd({ adId: '광고단위ID' });
+     ready = true;
+   }
+   AdMob.addListener(RewardAdPluginEvents.Dismissed, load); // 다음 광고 미리 로드
+   load();
+   window.AdBridge = {
+     isRewardedReady: () => ready,
+     showRewarded: async (onReward) => {
+       ready = false;
+       const r = await AdMob.showRewardVideoAd();
+       if (r) onReward(); // 끝까지 시청한 경우에만 부활
+     },
+   };
+   ```
+6. **수익 지급** — 광고 시청이 쌓이면 AdMob 대시보드에 수익 표시 →
+   잔액 $100 도달 시 등록한 계좌로 월 단위 자동 지급
+
+웹 버전은 Google **AdSense for Games (H5 Games Ads)** 승인을 받으면
+같은 AdBridge 규약으로 `adBreak` API를 감싸 사용할 수 있습니다.
 
 ## 파일 구조
 
