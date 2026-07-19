@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b1f4b"/>
+      <stop offset="1" stop-color="#0b0d24"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#bg)"/>
+  <!-- moon -->
+  <circle cx="400" cy="110" r="42" fill="#fff7d6"/>
+  <circle cx="416" cy="100" r="36" fill="#1b1f4b"/>
+  <!-- skyline -->
+  <rect x="30" y="300" width="70" height="160" fill="#232655"/>
+  <rect x="120" y="250" width="80" height="210" fill="#2b2f66"/>
+  <rect x="220" y="290" width="70" height="170" fill="#232655"/>
+  <rect x="310" y="230" width="90" height="230" fill="#2b2f66"/>
+  <rect x="420" y="310" width="60" height="150" fill="#232655"/>
+  <!-- speed lines -->
+  <rect x="40" y="368" width="120" height="14" rx="7" fill="#5ad1ff" opacity="0.85"/>
+  <rect x="20" y="404" width="90" height="14" rx="7" fill="#ff8fb3" opacity="0.85"/>
+  <!-- runner bag -->
+  <g transform="translate(250 330)">
+    <rect x="-10" y="-10" width="150" height="112" rx="26" fill="#c9762f"/>
+    <rect x="-10" y="-10" width="150" height="34" rx="17" fill="#a85e22"/>
+    <path d="M 25 -12 Q 65 -70 105 -12" stroke="#8a4d1a" stroke-width="22" fill="none" stroke-linecap="round"/>
+    <circle cx="42" cy="52" r="12" fill="#5b3d1e"/>
+    <circle cx="88" cy="52" r="12" fill="#5b3d1e"/>
+  </g>
+  <!-- exclamation -->
+  <text x="180" y="290" font-family="sans-serif" font-size="150" font-weight="900" fill="#ffd166" stroke="#0b0d24" stroke-width="10" paint-order="stroke">!</text>
+</svg>

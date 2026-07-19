@@ -1,0 +1,20 @@
+{
+  "name": "퇴근길 대추격전",
+  "short_name": "대추격전",
+  "description": "지하철에서 잠든 사이 사라진 가방과 휴대폰! 도둑을 쫓아 도시의 밤을 달리는 추격 러너 액션 게임",
+  "lang": "ko",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#070818",
+  "theme_color": "#070818",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
