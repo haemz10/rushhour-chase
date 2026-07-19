@@ -206,7 +206,8 @@ function startGame() {
   run = {
     t: 0, dist: 0, coins: 0, catches: 0, items: 0, stage: 0,
     combo: 0, comboT: 0, bestCombo: 0,
-    speed: 0, spawnD: 500,
+    speed: 0, spawnD: 900, // 시작 직후 조작 안내를 읽을 유예 구간
+
     thief: null, thiefTimer: 4.5, hurtInChase: 0,
     obstacles: [], coinsArr: [], powerups: [], particles: [], floats: [],
     slowmo: 0, shake: 0, theme: 0, hintT: firstRunEver ? 6 : 2.5,
@@ -365,8 +366,9 @@ function spawnPattern() {
 
 /* ---------------- 도둑 ---------------- */
 function spawnThief() {
+  // 등장 거리는 화면 폭과 무관하게 380~480px로 제한 (가로모드에서 추격이 늘어지지 않게)
   run.thief = {
-    dx: Math.max(W * 0.72, 380), y: GY(), vy: 0,
+    dx: clamp(W * 0.72, 380, 480), y: GY(), vy: 0,
     jumpT: rand(0.6, 1.2), escaping: false, gone: false,
   };
   run.hurtInChase = 0;
@@ -556,7 +558,7 @@ function updatePlay(dt0) {
   // 도둑
   if (run.thief) {
     const th = run.thief;
-    const factor = th.escaping ? 1.4 : 0.93;
+    const factor = th.escaping ? 1.4 : 0.91;
     th.dx += (factor - 1) * sp * dt;
     // 도둑 폴짝폴짝 (연출용)
     th.jumpT -= dt;

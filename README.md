@@ -40,7 +40,6 @@
 ## 실행 방법
 
 ```bash
-cd game
 npx serve .        # 또는 python3 -m http.server 8080
 # 브라우저에서 http://localhost:3000 (모바일 확인은 개발자도구 기기 모드)
 ```
@@ -56,7 +55,7 @@ mkdir rushhour-app && cd rushhour-app
 npm init -y
 npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android
 npx cap init "퇴근길 대추격전" "com.yourcompany.rushhourchase" --web-dir=www
-cp -r ../game www          # 게임 파일을 www/로 복사
+cp -r ../rushhour-chase/* www   # 게임 파일을 www/로 복사 (.git 제외)
 npx cap add ios            # Xcode 필요 (App Store)
 npx cap add android        # Android Studio 필요 (Play Store)
 npx cap sync
@@ -73,7 +72,7 @@ npx cap open android       # AAB 빌드 → Play Console 업로드
 ## 파일 구조
 
 ```
-game/
+rushhour-chase/
 ├── index.html     # 엔트리 (뷰포트/PWA 메타)
 ├── game.js        # 게임 전체 로직 (컷씬·러너·상점·사운드)
 ├── i18n.js        # 6개 언어 문자열 (ko/en/ja/zh/es/fr)
