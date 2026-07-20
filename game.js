@@ -216,7 +216,7 @@ function startGame() {
   run = {
     t: 0, dist: 0, coins: 0, catches: 0, items: 0, stage: 0,
     combo: 0, comboT: 0, bestCombo: 0,
-    speed: 0, spawnD: 900, // 시작 직후 조작 안내를 읽을 유예 구간
+    speed: 0, spawnD: 760, // 시작 직후 조작 안내를 읽을 유예 구간 (약간 단축)
 
     thief: null, thiefTimer: 4.5, hurtInChase: 0,
     obstacles: [], coinsArr: [], powerups: [], particles: [], floats: [],
@@ -482,9 +482,9 @@ function spawnPattern() {
   const g = GY();
   const O = run.obstacles, C = run.coinsArr, U = run.powerups;
   const sp = Math.max(340, run.speed);
-  const hard = clamp(run.t / 75, 0, 1);            // 시간에 따른 난이도
-  const adv = run.stage >= 1 || run.t > 60;        // 스테이지 1: 구덩이·킥보드 해금
-  const adv2 = run.stage >= 2 || run.t > 130;      // 스테이지 2: 더 빠른 킥보드
+  const hard = clamp(run.t / 60, 0, 1);            // 시간에 따른 난이도 (더 빨리 최고조)
+  const adv = run.stage >= 1 || run.t > 45;        // 스테이지 1: 구덩이·킥보드 해금 (앞당김)
+  const adv2 = run.stage >= 2 || run.t > 110;      // 스테이지 2: 더 빠른 킥보드
 
   if (adv && !run.mercyT && r < 0.10) {
     // 맨홀 구덩이: 점프로만 회피 (점프 궤적을 따라가는 코인으로 점프 유도)
@@ -502,20 +502,20 @@ function spawnPattern() {
     O.push({ type: 'boxes', x, w: 58, h: 112 });
     C.push({ x: x + 110, y: g - 44, ph: 0 });
     C.push({ x: x + 154, y: g - 44, ph: 1 });
-  } else if (!run.mercyT && r < 0.60 + hard * 0.05 + run.stage * 0.012) {
+  } else if (!run.mercyT && r < 0.62 + hard * 0.08 + run.stage * 0.015) {
     // 이단 콤보 — 간격을 현재 속도로 계산해 "착지하자마자 충돌"을 없앤다:
-    // 근접형(한 번의 점프로 둘 다 넘기) 또는 원거리형(착지 후 0.3초+ 여유 뒤 재점프)
+    // 근접형(한 번의 점프로 둘 다 넘기) 또는 원거리형(착지 후 여유 뒤 재점프)
     O.push({ type: 'cone', x, w: 34, h: 46 });
     const nearPair = Math.random() < 0.45;
-    const d2 = nearPair ? sp * rand(0.34, 0.46) : sp * rand(1.05, 1.25);
+    const d2 = nearPair ? sp * rand(0.34, 0.46) : sp * rand(0.98, 1.15);
     if (nearPair) O.push({ type: 'cone', x: x + d2, w: 34, h: 46 });
     else O.push({ type: Math.random() < 0.5 ? 'barrier' : 'cone', x: x + d2, w: 50, h: 58 });
-  } else if (!run.mercyT && adv && hard > 0.45 && r < 0.66) {
+  } else if (!run.mercyT && adv && hard > 0.35 && r < 0.70) {
     // 삼단 압박: 콘 → 공중 비둘기(점프 중 펀치!) → 콘
     O.push({ type: 'cone', x, w: 34, h: 46 });
     O.push({ type: 'pigeon', x: x + sp * 0.35, w: 52, h: 38, yOff: rand(118, 138), ph: rand(0, TAU) });
-    O.push({ type: 'cone', x: x + sp * rand(1.1, 1.25), w: 34, h: 46 });
-  } else if (r < 0.72) {
+    O.push({ type: 'cone', x: x + sp * rand(1.0, 1.15), w: 34, h: 46 });
+  } else if (r < 0.75) {
     // 비둘기 떼: 아래로 지나가거나 펀치
     O.push({ type: 'pigeon', x, w: 52, h: 38, yOff: rand(118, 150), ph: rand(0, TAU) });
     for (let i = 0; i < 5; i++) C.push({ x: x - 40 + i * 44, y: g - 36, ph: i });
@@ -538,10 +538,11 @@ function spawnPattern() {
   }
   // 간격: "점프 체공 0.75초 + 반응 여유" 기반 시간 단위 (착지 지점 함정 방지)
   // DDA(실력↓ → 넓게) · 자비 구간 더 넓게 · 스테이지가 오를수록 타이트하게
-  const gapMul = clamp(1 - save.skill * 0.05, 0.82, 1.3)
+  const gapMul = clamp(1 - save.skill * 0.05, 0.80, 1.3)
     * (run.mercyT > 0 ? 1.35 : 1)
-    * (1 - Math.min(0.18, run.stage * 0.045));
-  run.spawnD = Math.max((rand(140, 330) + sp * 0.72) * gapMul, sp * 0.88);
+    * (1 - Math.min(0.22, run.stage * 0.055));
+  // 착지 안전 하한(sp*0.8): 점프 수평거리(sp*0.75)보다 살짝 뒤 — 아슬아슬하지만 착지 즉시 충돌은 불가
+  run.spawnD = Math.max((rand(110, 280) + sp * 0.62) * gapMul, sp * 0.80);
 }
 
 /* ---------------- 도둑 ---------------- */
@@ -679,7 +680,7 @@ function hurt(obs) {
   // 판 내 자비: 12초 안에 2번 맞으면 잠시 패턴을 느슨하게 (플레이어에게 비노출)
   run.hitTimes.push(run.t);
   run.hitTimes = run.hitTimes.filter(t => run.t - t < 12);
-  if (run.hitTimes.length >= 2) { run.mercyT = 8; run.hitTimes = []; }
+  if (run.hitTimes.length >= 2) { run.mercyT = 6; run.hitTimes = []; }
   Sound.sfx('hurt');
   vibrate(90);
   burst(PX(), P.y - 40, 12, '#ff6b6b', 3);
@@ -717,7 +718,8 @@ function updatePlay(dt0) {
   run.hintT = Math.max(0, run.hintT - dt0);
 
   // 속도: 시간 + 스테이지(성공할수록 빠름) × 숨겨진 DDA 보정 — 가속을 높여 긴장감 유지
-  const target = (baseSpeed() + Math.min(480, run.t * 10) + run.stage * 45) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
+  // 초반부터 빠르게 붙고(초기 +90) 상한도 높여 반응 압박을 키운다
+  const target = (baseSpeed() + 90 + Math.min(640, run.t * 17) + run.stage * 62) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
   run.speed = lerp(run.speed, target, 1 - Math.pow(0.001, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
