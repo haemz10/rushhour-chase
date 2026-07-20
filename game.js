@@ -228,6 +228,9 @@ function startGame() {
     bestNotified: false,             // 최고기록 돌파 배너 1회
     missionReward: 0, streakBonus: 0,
     boss: null, bossPending: 0, projectiles: [], // 보스전
+    smashes: 0, nearMisses: 0, feverCount: 0,    // 미션 추적
+    goldCatches: 0, bossKills: 0,
+    noHitDist: 0, bestNoHit: 0,                  // 노히트 거리
   };
   const maxHearts = 3 + save.up.heart;
   P = {
@@ -241,8 +244,8 @@ function startGame() {
 
 function baseSpeed() { return 340 + save.up.shoe * 22; }
 
-// 숨겨진 동적 난이도: 연패하면 살짝 느려지고, 잘하면 살짝 빨라진다 (0.88x ~ 1.18x)
-function diffMod() { return clamp(1 + save.skill * 0.03, 0.88, 1.18); }
+// 숨겨진 동적 난이도: 연패하면 살짝 느려지고, 잘하면 살짝 빨라진다 (0.85x ~ 1.25x)
+function diffMod() { return clamp(1 + save.skill * 0.035, 0.85, 1.25); }
 
 function currentScore() {
   if (!run) return 0;
@@ -251,11 +254,34 @@ function currentScore() {
 
 /* ---------------- 일일 미션 / 출석 ---------------- */
 const MISSION_DEFS = [
-  { k: 'dist',  goals: [1000, 1500, 2500], rewards: [100, 150, 250] },
-  { k: 'catch', goals: [3, 5, 8],          rewards: [120, 200, 300] },
-  { k: 'coins', goals: [200, 300, 500],    rewards: [100, 150, 250] },
-  { k: 'combo', goals: [20, 30, 40],       rewards: [100, 150, 250] },
+  { k: 'dist',   goals: [1000, 1500, 2500], rewards: [100, 150, 250] },
+  { k: 'catch',  goals: [3, 5, 8],          rewards: [120, 200, 300] },
+  { k: 'coins',  goals: [200, 300, 500],    rewards: [100, 150, 250] },
+  { k: 'combo',  goals: [20, 30, 40],       rewards: [100, 150, 250] },
+  { k: 'smash',  goals: [8, 15, 25],        rewards: [100, 150, 250] },
+  { k: 'near',   goals: [3, 6, 10],         rewards: [120, 180, 280] },
+  { k: 'nomiss', goals: [300, 600, 1000],   rewards: [150, 220, 350] },
+  { k: 'fever',  goals: [1, 2, 3],          rewards: [120, 180, 260] },
+  { k: 'gold',   goals: [1, 1, 2],          rewards: [250, 250, 400] },
+  { k: 'boss',   goals: [1, 1, 1],          rewards: [300, 300, 300] },
 ];
+
+// 이번 판의 성과를 미션 진행값으로 환산 (정산·게임오버 미리보기 공용)
+function missionRunValue(m) {
+  switch (m.k) {
+    case 'dist':   return m.p + Math.floor(run.dist);
+    case 'catch':  return m.p + run.catches;
+    case 'coins':  return m.p + run.coins;
+    case 'combo':  return Math.max(m.p, run.bestCombo);
+    case 'smash':  return m.p + run.smashes;
+    case 'near':   return m.p + run.nearMisses;
+    case 'nomiss': return Math.max(m.p, Math.floor(run.bestNoHit));
+    case 'fever':  return m.p + run.feverCount;
+    case 'gold':   return m.p + run.goldCatches;
+    case 'boss':   return m.p + run.bossKills;
+  }
+  return m.p;
+}
 function todayStr(offsetDays) {
   const d = new Date(Date.now() + (offsetDays || 0) * 86400000);
   return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
@@ -264,7 +290,9 @@ function ensureMissions() {
   const d = todayStr();
   if (!save.missions || save.missions.date !== d) {
     const tier = save.skill >= 3 ? 2 : save.skill >= 0 ? 1 : 0; // 실력에 맞는 목표 (플로우 유지)
-    const defs = [...MISSION_DEFS].sort(() => Math.random() - 0.5).slice(0, 3);
+    // 초보(tier 0)에게는 스테이지 3 도달이 필요한 보스 미션 제외
+    const pool = MISSION_DEFS.filter(df => tier >= 1 || df.k !== 'boss');
+    const defs = [...pool].sort(() => Math.random() - 0.5).slice(0, 3);
     save.missions = {
       date: d,
       list: defs.map(df => ({ k: df.k, goal: df.goals[tier], reward: df.rewards[tier], p: 0, done: false })),
@@ -321,10 +349,7 @@ function settleRun() {
   ensureMissions();
   for (const m of save.missions.list) {
     if (m.done) continue;
-    if (m.k === 'dist') m.p += Math.floor(run.dist);
-    else if (m.k === 'catch') m.p += run.catches;
-    else if (m.k === 'coins') m.p += run.coins;
-    else if (m.k === 'combo') m.p = Math.max(m.p, run.bestCombo);
+    m.p = missionRunValue(m);
     if (m.p >= m.goal) {
       m.done = true;
       save.bank += m.reward;
@@ -456,44 +481,54 @@ function spawnPattern() {
   const x = W + 140;
   const g = GY();
   const O = run.obstacles, C = run.coinsArr, U = run.powerups;
-  const hard = clamp(run.t / 90, 0, 1);            // 시간에 따른 난이도
-  const adv = run.stage >= 1 || run.t > 75;        // 스테이지 1: 구덩이·킥보드 해금
-  const adv2 = run.stage >= 2 || run.t > 150;      // 스테이지 2: 더 빠른 킥보드
+  const sp = Math.max(340, run.speed);
+  const hard = clamp(run.t / 75, 0, 1);            // 시간에 따른 난이도
+  const adv = run.stage >= 1 || run.t > 60;        // 스테이지 1: 구덩이·킥보드 해금
+  const adv2 = run.stage >= 2 || run.t > 130;      // 스테이지 2: 더 빠른 킥보드
 
   if (adv && !run.mercyT && r < 0.10) {
     // 맨홀 구덩이: 점프로만 회피 (점프 궤적을 따라가는 코인으로 점프 유도)
     O.push({ type: 'pit', x, w: 100, h: 0 });
-    coinJumpArc(x - Math.max(120, run.speed * 0.28), Math.max(340, run.speed));
-  } else if (adv && !run.mercyT && r < 0.18) {
+    coinJumpArc(x - Math.max(120, sp * 0.28), sp);
+  } else if (adv && !run.mercyT && r < 0.19) {
     // 폭주 킥보드: 화면 스크롤보다 빠르게 돌진 (펀치 또는 점프)
-    O.push({ type: 'rider', x: x + 220, w: 44, h: 88, vx: 120 + hard * 90 + (adv2 ? 45 : 0), ph: rand(0, TAU) });
+    O.push({ type: 'rider', x: x + 220, w: 44, h: 88, vx: 130 + hard * 100 + (adv2 ? 50 : 0), ph: rand(0, TAU) });
   } else if (r < 0.30) {
     O.push({ type: 'cone', x, w: 34, h: 46 });
-  } else if (r < 0.42) {
+  } else if (r < 0.41) {
     O.push({ type: 'barrier', x, w: 56, h: 62 });
     if (Math.random() < 0.5) for (let i = 0; i < 4; i++) C.push({ x: x - 60 + i * 44, y: g - 130 - Math.sin(i / 3 * Math.PI) * 46, ph: i });
-  } else if (r < 0.52) {
+  } else if (r < 0.51) {
     O.push({ type: 'boxes', x, w: 58, h: 112 });
     C.push({ x: x + 110, y: g - 44, ph: 0 });
     C.push({ x: x + 154, y: g - 44, ph: 1 });
-  } else if (!run.mercyT && r < 0.58 + hard * 0.06 + run.stage * 0.01) {
-    // 이단 콤보: 콘 + 뒤이어 장애물 (자비 구간에는 미출현)
+  } else if (!run.mercyT && r < 0.60 + hard * 0.05 + run.stage * 0.012) {
+    // 이단 콤보 — 간격을 현재 속도로 계산해 "착지하자마자 충돌"을 없앤다:
+    // 근접형(한 번의 점프로 둘 다 넘기) 또는 원거리형(착지 후 0.3초+ 여유 뒤 재점프)
     O.push({ type: 'cone', x, w: 34, h: 46 });
-    O.push({ type: Math.random() < 0.5 ? 'barrier' : 'cone', x: x + 250 + rand(0, 80), w: 50, h: 58 });
-  } else if (r < 0.68) {
+    const nearPair = Math.random() < 0.45;
+    const d2 = nearPair ? sp * rand(0.34, 0.46) : sp * rand(1.05, 1.25);
+    if (nearPair) O.push({ type: 'cone', x: x + d2, w: 34, h: 46 });
+    else O.push({ type: Math.random() < 0.5 ? 'barrier' : 'cone', x: x + d2, w: 50, h: 58 });
+  } else if (!run.mercyT && adv && hard > 0.45 && r < 0.66) {
+    // 삼단 압박: 콘 → 공중 비둘기(점프 중 펀치!) → 콘
+    O.push({ type: 'cone', x, w: 34, h: 46 });
+    O.push({ type: 'pigeon', x: x + sp * 0.35, w: 52, h: 38, yOff: rand(118, 138), ph: rand(0, TAU) });
+    O.push({ type: 'cone', x: x + sp * rand(1.1, 1.25), w: 34, h: 46 });
+  } else if (r < 0.72) {
     // 비둘기 떼: 아래로 지나가거나 펀치
     O.push({ type: 'pigeon', x, w: 52, h: 38, yOff: rand(118, 150), ph: rand(0, TAU) });
     for (let i = 0; i < 5; i++) C.push({ x: x - 40 + i * 44, y: g - 36, ph: i });
-  } else if (r < 0.81) {
+  } else if (r < 0.83) {
     // 코인 아치: 점프 포물선과 정확히 일치 (잘 뛰면 전부 먹힌다)
-    coinJumpArc(x, Math.max(340, run.speed));
-  } else if (r < 0.90) {
+    coinJumpArc(x, sp);
+  } else if (r < 0.905) {
     // 낮은 코인 줄
     for (let i = 0; i < 6; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
   } else {
     // 파워업 (고전 중이면 하트 확률을 몰래 올려준다 — DDA)
     const pr = Math.random();
-    const heartBias = (save.skill < 0 || P.hearts <= 1) ? 0.30 : 0.14;
+    const heartBias = (save.skill < 0 || P.hearts <= 1) ? 0.30 : 0.10;
     let type = 'magnet';
     if (pr < heartBias) type = 'heart';
     else if (pr < heartBias + 0.28) type = 'magnet';
@@ -501,11 +536,12 @@ function spawnPattern() {
     else type = 'boost';
     U.push({ type, x, y: g - 70 - rand(0, 60), ph: rand(0, TAU) });
   }
-  // 간격: DDA(실력↓ → 넓게) · 자비 구간엔 더 넓게 · 스테이지가 오를수록 촘촘하게
+  // 간격: "점프 체공 0.75초 + 반응 여유" 기반 시간 단위 (착지 지점 함정 방지)
+  // DDA(실력↓ → 넓게) · 자비 구간 더 넓게 · 스테이지가 오를수록 타이트하게
   const gapMul = clamp(1 - save.skill * 0.05, 0.82, 1.3)
     * (run.mercyT > 0 ? 1.35 : 1)
-    * (1 - Math.min(0.12, run.stage * 0.03));
-  run.spawnD = (rand(300, 560) + run.speed * 0.38) * gapMul;
+    * (1 - Math.min(0.18, run.stage * 0.045));
+  run.spawnD = Math.max((rand(140, 330) + sp * 0.72) * gapMul, sp * 0.88);
 }
 
 /* ---------------- 도둑 ---------------- */
@@ -541,6 +577,7 @@ function catchThief() {
   burst(tx, GY() - 60, golden ? 40 : 26, '#ffd166', 4, true);
   burst(tx, GY() - 60, 14, golden ? '#fff1c4' : '#ff8fb3', 3, true);
   if (golden) {
+    run.goldCatches++;
     addFloat(W / 2, H * 0.32, T('goldCatch', bonus), '#ffe066', 1.6);
     // 황금 도둑은 파워업도 떨군다
     const drop = ['magnet', 'shield', 'boost', 'heart'][Math.floor(rand(0, 4))];
@@ -587,6 +624,7 @@ function bossDefeated() {
   const reward = 500 + run.stage * 100;
   run.coins += reward;
   run.catches++;
+  run.bossKills++;
   run.combo += 30; run.comboT = 3;
   run.bestCombo = Math.max(run.bestCombo, run.combo);
   P.hearts = Math.min(P.maxHearts, P.hearts + 2);
@@ -637,6 +675,7 @@ function hurt(obs) {
   P.hearts--;
   P.inv = 1.6; P.hurtT = 0.5;
   run.combo = 0; run.feverT = 0; run.shake = 0.4;
+  run.noHitDist = 0;
   // 판 내 자비: 12초 안에 2번 맞으면 잠시 패턴을 느슨하게 (플레이어에게 비노출)
   run.hitTimes.push(run.t);
   run.hitTimes = run.hitTimes.filter(t => run.t - t < 12);
@@ -659,6 +698,7 @@ function hurt(obs) {
 
 function smash(o, color) {
   o.dead = true;
+  run.smashes++;
   Sound.sfx('smash');
   burst(o.x, GY() - o.h / 2 - (o.yOff || 0), 16, color || '#d9a05b', 4);
   const mult = 1 + Math.floor(run.combo / 10) + (run.feverT > 0 ? 1 : 0);
@@ -676,11 +716,13 @@ function updatePlay(dt0) {
   run.t += dt;
   run.hintT = Math.max(0, run.hintT - dt0);
 
-  // 속도: 시간 + 스테이지(성공할수록 빠름) × 숨겨진 DDA 보정
-  const target = (baseSpeed() + Math.min(430, run.t * 7) + run.stage * 40) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
+  // 속도: 시간 + 스테이지(성공할수록 빠름) × 숨겨진 DDA 보정 — 가속을 높여 긴장감 유지
+  const target = (baseSpeed() + Math.min(480, run.t * 10) + run.stage * 45) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
   run.speed = lerp(run.speed, target, 1 - Math.pow(0.001, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
+  run.noHitDist += sp * dt / 10;
+  run.bestNoHit = Math.max(run.bestNoHit, run.noHitDist);
 
   // 피버 타임: 30콤보 도달 시 8초간 코인 배수 +1
   run.mercyT = Math.max(0, run.mercyT - dt);
@@ -688,6 +730,7 @@ function updatePlay(dt0) {
   run.feverCd = Math.max(0, run.feverCd - dt);
   if (run.combo >= 30 && run.feverT <= 0 && run.feverCd <= 0) {
     run.feverT = 8; run.feverCd = 25;
+    run.feverCount++;
     Sound.sfx('fever');
     vibrate(50);
     addFloat(W / 2, H * 0.3, T('fever'), '#ffe066', 1.5);
@@ -773,6 +816,7 @@ function updatePlay(dt0) {
       } else if (oR < pL && o.minC !== undefined && o.minC < 26) {
         // 아슬아슬하게 넘었다! 작은 보상 (니어미스 심리 — 긴장 → 안도 → 보상)
         o.nm = true;
+        run.nearMisses++;
         run.coins += 5;
         run.combo += 3; run.comboT = 3;
         Sound.sfx('near');
@@ -1824,11 +1868,7 @@ function drawOver() {
     ensureMissions();
     for (const m of save.missions.list) {
       if (m.done) continue;
-      const p = m.k === 'dist' ? m.p + Math.floor(run.dist)
-        : m.k === 'catch' ? m.p + run.catches
-        : m.k === 'coins' ? m.p + run.coins
-        : Math.max(m.p, run.bestCombo);
-      if (p >= m.goal) mReward += m.reward;
+      if (missionRunValue(m) >= m.goal) mReward += m.reward;
     }
     if (save.streakDay !== todayStr()) {
       const c = (save.streakDay === todayStr(-1)) ? (save.streakCount || 0) + 1 : 1;
