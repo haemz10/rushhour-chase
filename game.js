@@ -58,6 +58,7 @@ const save = {
   best: 0, bestDist: 0, bank: 0, totalCatches: 0,
   up: { shoe: 0, magnet: 0, shield: 0, heart: 0 },
   muted: false, introSeen: false,
+  bgmMode: 'retro',                  // 'retro'(기본 합성 8비트) | 'custom'(내 음악 bgm.mp3)
   skill: 0, failStreak: 0,           // 보이지 않는 동적 난이도(DDA) 지표
   missions: null,                    // 일일 미션 {date, list}
   streakDay: '', streakCount: 0,     // 연속 출석
@@ -91,21 +92,68 @@ function T(key, ...a) {
 if (save.lang) { document.title = L.title; document.documentElement.lang = save.lang; }
 
 // 길면 자동 축소되는 텍스트 폰트 설정
+// 16진수 색을 흰색 쪽으로 섞어 밝게 (랜드마크가 배경 건물보다 도드라지게)
+function lighten(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const L = (v) => Math.round(v + (255 - v) * amt);
+  return `rgb(${L(r)},${L(g)},${L(b)})`;
+}
+
 function fitFont(txt, maxW, size, weight) {
-  ctx.font = `${weight || 'bold'} ${size}px sans-serif`;
+  const wt = weight || 'bold';
+  ctx.font = `${wt} ${size}px sans-serif`;
   const w = ctx.measureText(txt).width;
-  if (w > maxW) ctx.font = `${weight || 'bold'} ${Math.max(10, Math.floor(size * maxW / w))}px sans-serif`;
+  // 이모지는 measureText가 실제보다 좁게 재는 경우가 많아, 이모지 수만큼 여유폭을 뺀다.
+  let emoji = 0; try { emoji = (txt.match(/\p{Extended_Pictographic}/gu) || []).length; } catch (e) {}
+  const eff = maxW - emoji * 7;
+  if (w > eff) ctx.font = `${wt} ${Math.max(9, Math.floor(size * eff / w))}px sans-serif`;
 }
 
 /* ---------------- Sound (WebAudio 합성) ---------------- */
 const Sound = {
-  ac: null, musicTimer: null, nextNoteTime: 0, step: 0,
+  ac: null, musicTimer: null, nextNoteTime: 0, step: 0, bgmEl: null,
   init() {
-    if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); return; }
+    if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); this.applyBgm(); return; }
     try {
       this.ac = new (window.AudioContext || window.webkitAudioContext)();
       this.startMusic();
+      this.applyBgm();
     } catch (e) {}
+  },
+  // 앱이 백그라운드로 가거나 화면이 꺼질 때 모든 소리를 멈춘다.
+  suspend() {
+    try { if (this.ac && this.ac.state === 'running') this.ac.suspend(); } catch (e) {}
+    if (this.bgmEl) { try { this.bgmEl.pause(); } catch (e) {} }
+  },
+  // 다시 돌아왔을 때 소리를 되살린다.
+  resume() {
+    try { if (this.ac && this.ac.state === 'suspended') this.ac.resume(); } catch (e) {}
+    if (!save.muted && save.bgmMode === 'custom' && this.bgmEl) { this.bgmEl.play().catch(() => {}); }
+  },
+  setMuted(m) {
+    save.muted = m; persist();
+    if (m) { if (this.bgmEl) { try { this.bgmEl.pause(); } catch (e) {} } }
+    else { this.init(); this.applyBgm(); }
+  },
+  setBgmMode(mode) { save.bgmMode = mode; persist(); this.applyBgm(); },
+  // 내 음악(bgm.mp3) 재생 / 파일 없거나 실패 시 기본 레트로 BGM으로 자동 폴백
+  applyBgm() {
+    if (save.bgmMode === 'custom') {
+      if (!this.bgmEl) {
+        try {
+          this.bgmEl = new Audio('bgm.mp3');
+          this.bgmEl.loop = true; this.bgmEl.volume = 0.5;
+          this.bgmEl.addEventListener('error', () => {
+            save.bgmMode = 'retro'; persist();
+            if (this.bgmEl) { try { this.bgmEl.pause(); } catch (e) {} this.bgmEl = null; }
+          });
+        } catch (e) { save.bgmMode = 'retro'; return; }
+      }
+      if (!save.muted) this.bgmEl.play().catch(() => {});
+    } else if (this.bgmEl) {
+      try { this.bgmEl.pause(); } catch (e) {}
+    }
   },
   tone(freq, dur, type, vol, slide, when) {
     if (!this.ac || save.muted) return;
@@ -171,7 +219,10 @@ const Sound = {
     const SPB = 60 / 140 / 2; // 140bpm 8분음표
     this.musicTimer = setInterval(() => {
       if (!this.ac || save.muted) return;
+      // 내 음악(custom) 모드일 땐 합성 BGM은 재생하지 않는다 (효과음은 그대로).
+      const useCustom = (save.bgmMode === 'custom' && this.bgmEl);
       while (this.nextNoteTime < this.ac.currentTime + 0.25) {
+        if (useCustom) { this.nextNoteTime += (60 / 140 / 2); this.step++; continue; }
         const i = this.step % 32;
         const playing = (state === 'play' || state === 'intro');
         const vol = playing ? 1 : 0.55;
@@ -202,9 +253,23 @@ const THEMES = [
   { name: '새벽 한강공원', sky1: '#071a20', sky2: '#0f3a40', far: '#0d2b33', mid: '#1a4650', accent: '#2fa8a0', neon: ['#7bffc8', '#5ad1ff', '#ffd166'] },
 ];
 
+// 언어별 대표 도시: 상징 건물(landmark) 실루엣 + 간판 텍스트.
+// 영어권은 뉴욕·런던·시드니를 스테이지별로 번갈아 보여준다.
+const CITY = {
+  ko: { marks: ['seoul'],                    signs: ['24시', '노래방', '치킨', '카페', 'PC방', '분식'] },
+  en: { marks: ['nyc', 'london', 'sydney'],  signs: ['DINER', 'BAR', '24H', 'CAFÉ', 'PIZZA', 'PUB'] },
+  ja: { marks: ['tokyo'],                    signs: ['居酒屋', 'ラーメン', 'カラオケ', 'コンビニ', 'カフェ', '寿司'] },
+  zh: { marks: ['shanghai'],                 signs: ['火锅', '奶茶', '网吧', '便利店', '咖啡', '烧烤'] },
+  es: { marks: ['barcelona'],                signs: ['TAPAS', 'BAR', 'CAFÉ', '24H', 'FÚTBOL', 'PAN'] },
+  fr: { marks: ['paris'],                    signs: ['CAFÉ', 'BAR', 'BISTRO', '24H', 'TABAC', 'PAIN'] },
+};
+function cityData() { return CITY[save.lang] || CITY.en; }
+function landmarkForTheme(theme) { const c = cityData(); return c.marks[theme % c.marks.length]; }
+
 /* ---------------- 상태 ---------------- */
 let state = 'boot';   // boot | intro | menu | shop | play | pause | over
 let run = null, P = null;
+let heldRun = null, heldP = null;   // 홈으로 나갔다가 '이어서 하기' 위해 보관한 판
 let uiButtons = [];
 let lastTime = 0;
 let globalT = 0;
@@ -240,6 +305,7 @@ function startGame() {
     punchT: 0, inv: 0, hurtT: 0,
     shieldT: 0, magnetT: 0, boostT: 0,
     weapon: null, weaponCharges: 0,   // 원거리 무기 장착 상태
+    iceT: 0, slide: 0,                // 빙판: 미끄러짐 지속시간 / 앞으로 밀리는 오프셋
     hearts: maxHearts, maxHearts,
   };
   state = 'play';
@@ -337,6 +403,17 @@ function doRevive() {
 }
 
 // 결과 정산: 코인·기록·미션·출석·DDA 갱신 (이어하기를 위해 사망 시점과 분리, 정확히 1회 실행)
+// 최고 점수/거리를 즉시 저장 — 판이 정식 정산되기 전(일시정지·백그라운드·게임오버)에도
+// 최고 기록이 유실되지 않도록 한다. (친구가 8만점 찍었는데 옛 기록만 남던 문제 방지)
+function recordBest() {
+  if (!run) return;
+  const s = currentScore();
+  let changed = false;
+  if (s > save.best) { save.best = s; changed = true; }
+  if (run.dist > save.bestDist) { save.bestDist = Math.floor(run.dist); changed = true; }
+  if (changed) persist();
+}
+
 function settleRun() {
   if (!run || run.settled) return;
   run.settled = true;
@@ -384,11 +461,13 @@ function settleRun() {
 function endGame() {
   Sound.sfx('over');
   state = 'over';
+  recordBest();                   // 최고 기록은 즉시 저장 (이어하기 여부와 무관)
   if (!canRevive()) settleRun(); // 이어하기가 불가능하면 즉시 정산
 }
 
 /* ---------------- 입력 ---------------- */
 function doJump() {
+  if (P.iceT > 0) return;   // 빙판에서 미끄러지는 동안엔 잠시 점프 불가
   if (P.ground) {
     P.vy = -900; P.ground = false; P.jumps = 1;
     Sound.sfx('jump');
@@ -410,6 +489,24 @@ function doPunch() {
       else if (run.boss && !run.boss.escaping && run.boss.dx >= 120) fireWeapon();
     }
   }
+}
+
+// 무기별 빗나갈 확률 (새총=정확, 거미줄=중간, 불꽃=크게 휘두름)
+function weaponMissChance(kind) {
+  return kind === 'sling' ? 0.15 : kind === 'web' ? 0.30 : 0.38;
+}
+
+// 도둑이 발사를 회피 (MISS) — 폴짝 뛰며 약올리고 살짝 벌어진다. 근접 펀치로 다시 노려야 함.
+function thiefDodge() {
+  const th = run.thief;
+  if (!th) return;
+  th.dx += 55;
+  if (th.y >= GY() - 2) th.vy = -640;   // 회피 점프
+  th.tauntT = 0.7;                       // 약올리는 메롱
+  Sound.sfx('near');
+  const tx = PX() + th.dx;
+  addFloat(tx, GY() - 155, T('missShot'), '#ff8fb3', 1.25);
+  burst(tx, GY() - 70, 8, '#cfd6ff', 3);
 }
 
 // 거미줄/새총/불꽃 발사체를 도둑을 향해 날린다
@@ -467,9 +564,18 @@ window.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && state === 'play') state = 'pause';
-  if (document.hidden && state === 'over') settleRun(); // 결과 화면에서 이탈해도 보상 보존
+  if (document.hidden) {
+    if (state === 'play') { recordBest(); state = 'pause'; }
+    if (state === 'over') settleRun();     // 결과 화면에서 이탈해도 보상 보존
+    Sound.suspend();                        // 백그라운드/화면꺼짐 시 BGM·효과음 정지
+  } else {
+    Sound.resume();                         // 다시 돌아오면 소리 복원
+  }
 });
+// 다른 앱으로 전환(blur)에도 소리를 멈추고, 복귀(focus) 시 되살린다.
+window.addEventListener('blur', () => { if (state === 'play') { recordBest(); state = 'pause'; } Sound.suspend(); });
+window.addEventListener('focus', () => { Sound.resume(); });
+window.addEventListener('pagehide', () => { Sound.suspend(); });
 
 /* ---------------- 파티클/플로팅 텍스트 ---------------- */
 function burst(x, y, n, color, size, up) {
@@ -505,7 +611,7 @@ function removeCoinsOverlappingObstacles() {
   const g = GY();
   run.coinsArr = run.coinsArr.filter(c => {
     for (const o of run.obstacles) {
-      if (o.type === 'pit') continue;                  // 구덩이는 바닥이라 무시
+      if (o.type === 'pit' || o.type === 'ice') continue;  // 바닥형은 코인 제거 대상 아님
       const half = o.w / 2 + 18;
       let oTop, oBot;
       if (o.type === 'pigeon' || o.type === 'drone') { oBot = g - o.yOff; oTop = oBot - o.h; }
@@ -524,7 +630,7 @@ function trySpawnVariety(x, g, sp, hard, adv) {
   if (Math.random() > 0.24) return false;          // 76%는 기존 패턴 사용
   const O = run.obstacles, C = run.coinsArr;
   const pool = ['hydrant', 'trashbags'];
-  if (adv) pool.push('cart');
+  if (adv) pool.push('cart', 'ice');
   if (adv && hard > 0.2) pool.push('drone');
   const type = pool[Math.floor(Math.random() * pool.length)];
   if (type === 'hydrant') {
@@ -541,6 +647,9 @@ function trySpawnVariety(x, g, sp, hard, adv) {
     // 택배 드론: 높이 날며 아래로 물건을 흘린다 (더블점프+펀치, 또는 아래로 통과)
     O.push({ type: 'drone', x, w: 52, h: 34, yOff: rand(150, 188), ph: rand(0, TAU) });
     for (let i = 0; i < 4; i++) C.push({ x: x - 30 + i * 40, y: g - 44, ph: i });
+  } else if (type === 'ice') {
+    // 바닥 빙판: 밟으면 앞으로 미끄러지고 잠시 점프 불가 (점프로 뛰어넘어 회피)
+    O.push({ type: 'ice', x, w: rand(88, 120), h: 0 });
   }
   return true;
 }
@@ -684,7 +793,7 @@ function catchThief(method) {
     // 세 가지 모두 회수 → 스테이지 클리어 (성공은 곧 난이도 상승)
     run.stage++;
     run.theme = (run.theme + 1) % THEMES.length;
-    P.hearts = Math.min(P.maxHearts, P.hearts + 1);
+    P.hearts = Math.min(9, P.hearts + 1);   // 스테이지 클리어 보상 하트 (축적 가능)
     run.coins += 300;
     save.skill = Math.min(6, save.skill + 1);
     Sound.sfx('clear');
@@ -703,9 +812,8 @@ function catchThief(method) {
 function spawnBoss() {
   run.boss = {
     dx: clamp(W * 0.72, 380, 480), y: GY(), vy: 0,
-    hp: 3 + Math.min(3, Math.floor(run.stage / 3)), // 3방 → 최대 6방
-    maxHp: 3 + Math.min(3, Math.floor(run.stage / 3)),
-    throwT: 2.4, jumpT: 1.1, staggerT: 0, hurtCount: 0, escaping: false,
+    hp: 6 + Math.min(4, Math.floor(run.stage / 3)),  // 6방 → 최대 10방 (훨씬 단단해짐)
+    throwT: 1.4, jumpT: 1.1, staggerT: 0, hurtCount: 0, escaping: false,
   };
   run.boss.maxHp = run.boss.hp;
   run.shake = 0.35;
@@ -806,9 +914,9 @@ function hurt(obs) {
     if (run.hurtInChase >= 3) thiefEscape(); // 3번 맞아야 놓침 (기존 2 → 3, 진행 가능성↑)
   }
   if (run.boss && !run.boss.escaping) {
-    run.boss.dx += 180;
+    run.boss.dx += 150;
     run.boss.hurtCount++;
-    if (run.boss.hurtCount >= 3) bossEscape();
+    if (run.boss.hurtCount >= 4) bossEscape();  // 보스가 단단해진 만큼 놓치는 기준도 완화
   }
   if (P.hearts <= 0) endGame();
 }
@@ -880,6 +988,9 @@ function updatePlay(dt0) {
   P.shieldT = Math.max(0, P.shieldT - dt);
   P.magnetT = Math.max(0, P.magnetT - dt);
   P.boostT = Math.max(0, P.boostT - dt);
+  // 빙판: 미끄러짐 타이머 감소, 빙판을 벗어나면 앞으로 밀린 위치가 서서히 원위치로
+  P.iceT = Math.max(0, P.iceT - dt0);
+  if (P.iceT <= 0) P.slide = Math.max(0, P.slide - 100 * dt0);
   run.comboT -= dt;
   if (run.comboT <= 0) run.combo = Math.max(0, run.combo - Math.ceil(run.combo * dt * 2));
 
@@ -890,7 +1001,7 @@ function updatePlay(dt0) {
     else spawnPattern();
   }
 
-  const px = PX(), g = GY();
+  const px = PX() + P.slide, g = GY();   // 빙판에서 앞으로 밀린 만큼 판정 위치도 이동
   const pTop = P.y - 82, pL = px - 17, pR = px + 17;
 
   // 장애물
@@ -898,6 +1009,16 @@ function updatePlay(dt0) {
     o.x -= (sp + (o.vx || 0)) * dt;
     if (o.dead) continue;
     const oL = o.x - o.w / 2, oR = o.x + o.w / 2;
+
+    // 빙판: 지상에서 밟으면 앞으로 스르르 미끄러지고 잠시 점프 불가 (피해는 없음)
+    if (o.type === 'ice') {
+      if (P.ground && px + 15 > oL && px - 15 < oR) {
+        P.iceT = 0.5;
+        P.slide = Math.min(52, P.slide + 150 * dt);
+        if (!o.slipSfx) { Sound.sfx('near'); o.slipSfx = true; }
+      }
+      continue;
+    }
 
     // 맨홀 구덩이: 지상에서 밟으면 피격 (점프로만 회피, 펀치 불가)
     if (o.type === 'pit') {
@@ -918,8 +1039,8 @@ function updatePlay(dt0) {
     } else {
       oBot = g; oTop = g - o.h;
     }
-    // 펀치 히트 (소화전 hydrant 은 펀치 불가 — 점프 전용)
-    if (P.punchT > 0.1 && (o.type === 'boxes' || o.type === 'pigeon' || o.type === 'cone' || o.type === 'rider' || o.type === 'trashbags' || o.type === 'cart' || o.type === 'drone')) {
+    // 펀치로 부술 수 있는 것만 (점프 전용: 택배상자 boxes · 바리케이드 barrier · 소화전 hydrant · 구덩이 pit · 빙판 ice)
+    if (P.punchT > 0.1 && (o.type === 'pigeon' || o.type === 'cone' || o.type === 'rider' || o.type === 'trashbags' || o.type === 'cart' || o.type === 'drone')) {
       if (oL < px + 105 && oR > px + 10 && oTop < P.y + 5 && oBot > P.y - 150) {
         const sc = o.type === 'pigeon' || o.type === 'drone' ? '#cfd6ff' : o.type === 'rider' || o.type === 'cart' ? '#8fe3ff' : '#d9a05b';
         smash(o, sc);
@@ -985,11 +1106,12 @@ function updatePlay(dt0) {
       if (u.type === 'shield') { P.shieldT = 8 + save.up.shield * 2; addFloat(px, P.y - 120, T('puShield'), '#9fd8ff', 1.1); }
       if (u.type === 'boost')  { P.boostT = 2.6; run.shake = 0.2; addFloat(px, P.y - 120, T('puBoost'), '#ffd166', 1.2); }
       if (u.type === 'heart')  {
-        if (P.hearts < P.maxHearts) { P.hearts++; addFloat(px, P.y - 120, T('puHeal'), '#ff8fb3', 1.1); }
-        else { run.coins += 30; addFloat(px, P.y - 120, T('puHeartFull'), '#ffd166', 1); }
+        // 하트는 축적 가능 — 이미 가득해도 코인 전환 없이 하나 더 쌓인다 (최대 9칸)
+        P.hearts = Math.min(9, P.hearts + 1);
+        addFloat(px, P.y - 120, T('puHeal'), '#ff8fb3', 1.1);
       }
       if (u.type === 'web' || u.type === 'sling' || u.type === 'fire') {
-        P.weapon = u.type; P.weaponCharges = 3;
+        P.weapon = u.type; P.weaponCharges = 1;   // 1발만 — 한 방을 신중하게 (너무 쉬워지지 않게)
         addFloat(px, P.y - 122, T(u.type === 'web' ? 'puWeb' : u.type === 'sling' ? 'puSling' : 'puFire'), '#dfe7ff', 1.15);
       }
       burst(u.x, u.y, 12, '#ffffff', 3, true);
@@ -1013,16 +1135,18 @@ function updatePlay(dt0) {
     b.vy += 2600 * dt;
     b.y += b.vy * dt;
     if (b.y >= g) { b.y = g; b.vy = 0; if (b.jumpT <= 0 && !b.escaping) { b.vy = -rand(380, 560); b.jumpT = rand(0.9, 1.7); } }
-    // 반격 투척
-    if (!b.escaping && b.staggerT <= 0 && b.dx < W * 0.85) {
+    // 반격 투척 — 더 자주, 더 빠르게, 후반엔 2연발 (회색 방구공에 맞으면 피해!)
+    if (!b.escaping && b.staggerT <= 0 && b.dx < W * 0.9) {
       b.throwT -= dt;
       if (b.throwT <= 0) {
-        b.throwT = rand(1.7, 2.7) - Math.min(0.8, run.stage * 0.05);
-        run.projectiles.push({
+        b.throwT = rand(1.0, 1.7) - Math.min(0.7, run.stage * 0.06);
+        const shoot = (a) => run.projectiles.push({
           x: px + b.dx - 24, y: b.y - 62,
-          vx: -(sp * 0.4 + rand(170, 260)), vy: rand(-430, -260),
+          vx: -(sp * 0.45 + rand(220, 320)), vy: rand(-470, -260) + a,
           spin: rand(0, TAU), t: 0,
         });
+        shoot(0);
+        if (run.stage >= 3 && Math.random() < 0.45) shoot(140); // 2연발
         Sound.sfx('throw');
       }
     }
@@ -1039,7 +1163,7 @@ function updatePlay(dt0) {
       run.bestCombo = Math.max(run.bestCombo, run.combo);
       if (b.hp <= 0) bossDefeated();
       else {
-        b.dx += 260;
+        b.dx += 190;   // 타격 후 후퇴 (과하지 않게 — 긴 체력과 균형)
         addFloat(px + Math.min(b.dx, W * 0.7), g - 175, ['💢', '😤', '🤬'][Math.floor(rand(0, 3))], '#ffffff', 1.3);
       }
     }
@@ -1080,11 +1204,12 @@ function updatePlay(dt0) {
     s.t += dt0;
     s.spin += dt0 * 16;
     s.x += s.vx * dt;
-    // 도둑 명중 → 원거리로 잡기
+    // 도둑 명중 판정 → 가끔 MISS (한 방에 무조건 잡히지 않게 — 긴장감)
     if (run.thief && !run.thief.escaping) {
       if (s.x >= px + run.thief.dx - 22) {
         s.dead = true;
-        catchThief(s.kind);
+        if (Math.random() < weaponMissChance(s.kind)) thiefDodge();
+        else catchThief(s.kind);
         continue;
       }
     } else if (run.boss && !run.boss.escaping && run.boss.staggerT <= 0) {
@@ -1190,6 +1315,8 @@ function drawBackground(theme, dist, dim) {
   drawSkyline(dist * 0.15, g - 150, 130, T.far, 97, false);
   // 중경 건물 + 네온 (패럴랙스 0.4)
   drawSkyline(dist * 0.4, g - 60, 190, T.mid, 53, true, T.neon);
+  // 도시 상징 건물 — 건물들 앞에 또렷하게 (낮은 랜드마크도 가려지지 않도록)
+  drawLandmark(landmarkForTheme(theme), dist, T);
 
   // 지면
   ctx.fillStyle = '#101226';
@@ -1207,6 +1334,88 @@ function drawBackground(theme, dist, dim) {
   for (let x = -off * 1.5 % 140; x < W; x += 140) ctx.fillRect(x, g + 30, 2, H - g - 30);
 
   if (dim) { ctx.fillStyle = `rgba(4,5,16,${dim})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// 도시 상징 건물 — 느리게 흘러가며 한 번에 하나만 보인다 (지나가며 스치는 랜드마크)
+function drawLandmark(kind, dist, T) {
+  const g = GY();
+  const scroll = dist * 0.1;
+  const period = W * 2.6;
+  let sx = W + 260 - ((((scroll + W * 0.5) % period) + period) % period);
+  if (sx < -280 || sx > W + 280) return;
+  const col = lighten(T.mid, 0.16);   // 건물보다 살짝 밝게 → 랜드마크가 또렷하게 보인다
+  const light = T.neon[2] || '#ffd166';
+  const light2 = T.neon[0] || '#ff6fa5';
+  ctx.save();
+  ctx.translate(sx, g - 24);
+  ctx.fillStyle = col;
+  const dot = (x, y, c, r) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r || 2.2, 0, TAU); ctx.fill(); ctx.fillStyle = col; };
+
+  if (kind === 'paris') {                    // 에펠탑
+    ctx.beginPath();
+    ctx.moveTo(-46, 0); ctx.lineTo(-14, -112); ctx.lineTo(-8, -186); ctx.lineTo(-4, -238);
+    ctx.lineTo(4, -238); ctx.lineTo(8, -186); ctx.lineTo(14, -112); ctx.lineTo(46, 0);
+    ctx.lineTo(26, 0); ctx.lineTo(9, -104); ctx.lineTo(-9, -104); ctx.lineTo(-26, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.fillRect(-32, -46, 64, 7); ctx.fillRect(-18, -150, 36, 5); ctx.fillRect(-2, -256, 4, 20);
+    dot(0, -256, light, 2.6);
+  } else if (kind === 'tokyo') {             // 도쿄타워 (붉은 격자탑)
+    ctx.fillStyle = '#7c2a2a';
+    ctx.beginPath();
+    ctx.moveTo(-48, 0); ctx.lineTo(-14, -120); ctx.lineTo(-7, -196); ctx.lineTo(-4, -240);
+    ctx.lineTo(4, -240); ctx.lineTo(7, -196); ctx.lineTo(14, -120); ctx.lineTo(48, 0);
+    ctx.lineTo(28, 0); ctx.lineTo(9, -112); ctx.lineTo(-9, -112); ctx.lineTo(-28, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#8f3a34'; ctx.fillRect(-30, -60, 60, 8); ctx.fillRect(-16, -150, 32, 6);
+    ctx.fillStyle = '#7c2a2a'; ctx.fillRect(-2, -262, 4, 22);
+    dot(0, -262, '#ff5c4d', 2.6);
+  } else if (kind === 'seoul') {             // N서울타워 (남산 위)
+    ctx.beginPath(); ctx.moveTo(-130, 0); ctx.quadraticCurveTo(0, -66, 130, 0); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-9, -176, 18, 122);
+    ctx.beginPath(); ctx.moveTo(-20, -176); ctx.lineTo(20, -176); ctx.lineTo(14, -196); ctx.lineTo(-14, -196); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-14, -210, 28, 16);
+    ctx.fillRect(-2, -262, 4, 52);
+    dot(0, -262, '#ff5c4d', 2.8); dot(0, -202, light, 1.8);
+  } else if (kind === 'barcelona') {         // 사그라다 파밀리아 (여러 첨탑)
+    const sp = [[-42, 150], [-22, 200], [0, 236], [22, 205], [42, 158]];
+    for (const [x, h] of sp) {
+      ctx.beginPath();
+      ctx.moveTo(x - 9, 0); ctx.lineTo(x - 5, -h * 0.65); ctx.lineTo(x, -h); ctx.lineTo(x + 5, -h * 0.65); ctx.lineTo(x + 9, 0);
+      ctx.closePath(); ctx.fill();
+      dot(x, -h + 4, light, 1.8);
+      ctx.fillStyle = col;
+    }
+  } else if (kind === 'shanghai') {          // 동방명주 (구슬탑)
+    for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 5, -64); ctx.lineTo(s * 34, 0); ctx.lineTo(s * 20, 0); ctx.lineTo(s * 3, -64); ctx.closePath(); ctx.fill(); }
+    ctx.fillRect(-6, -210, 12, 150);
+    ctx.beginPath(); ctx.arc(0, -98, 22, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -178, 15, 0, TAU); ctx.fill();
+    ctx.fillRect(-2, -252, 4, 42);
+    dot(0, -98, light2, 3); dot(0, -178, light2, 2.4); dot(0, -252, light, 2.4);
+  } else if (kind === 'nyc') {               // 엠파이어 스테이트 빌딩
+    ctx.fillRect(-42, -150, 84, 150); ctx.fillRect(-30, -202, 60, 52);
+    ctx.fillRect(-18, -238, 36, 36); ctx.fillRect(-7, -266, 14, 28); ctx.fillRect(-2, -300, 4, 34);
+    dot(0, -300, light, 2.4);
+    ctx.fillStyle = 'rgba(255,235,170,0.5)';
+    for (let r = 0; r < 5; r++) for (let c = 0; c < 4; c++) if ((r + c) % 2) ctx.fillRect(-34 + c * 20, -140 + r * 26, 6, 10);
+    ctx.fillStyle = col;
+  } else if (kind === 'london') {            // 빅벤 (시계탑)
+    ctx.fillRect(-19, -212, 38, 212);
+    ctx.fillStyle = light; ctx.beginPath(); ctx.arc(0, -182, 10, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#0a0a1a'; ctx.fillRect(-1, -190, 2, 8); ctx.fillRect(0, -183, 7, 2);
+    ctx.fillStyle = col; ctx.fillRect(-22, -238, 44, 28);
+    ctx.beginPath(); ctx.moveTo(-19, -238); ctx.lineTo(0, -288); ctx.lineTo(19, -238); ctx.closePath(); ctx.fill();
+    dot(0, -288, light, 2.2);
+  } else if (kind === 'sydney') {            // 시드니 오페라 하우스 (조개 지붕)
+    const sail = (x, w, h, f) => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.quadraticCurveTo(x + w * f, -h, x + w, 0); ctx.closePath(); ctx.fill(); };
+    ctx.fillStyle = col;
+    sail(-96, 60, 78, 0.15); sail(-70, 66, 108, 0.18); sail(-30, 60, 84, 0.2);
+    sail(20, 64, 100, 0.8); sail(58, 58, 74, 0.85);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    sail(-70, 66, 108, 0.18); sail(20, 64, 100, 0.8);
+    ctx.fillStyle = col;
+  }
+  ctx.restore();
 }
 
 function drawSkyline(scroll, baseY, maxH, color, seedStep, neonOn, neonColors) {
@@ -1233,7 +1442,8 @@ function drawSkyline(scroll, baseY, maxH, color, seedStep, neonOn, neonColors) {
       ctx.fillStyle = '#0a0a1a';
       ctx.font = 'bold 12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(['24시', '노래방', '분식', '카페', 'PC방', '편의점'][seed % 6], x + 49, baseY - bh - 11);
+      const signs = cityData().signs;
+      ctx.fillText(signs[seed % signs.length], x + 49, baseY - bh - 11);
     }
     ctx.fillStyle = color;
   }
@@ -1247,6 +1457,7 @@ function drawHeroine(x, y, opt) {
   ctx.save();
   ctx.translate(x, y);
   if (o.hurt) ctx.rotate(-0.18);
+  else if (o.slip) ctx.rotate(0.2);   // 빙판에서 뒤로 기우뚱 미끄러지는 자세
   const ph = o.phase || 0;
   const runc = o.pose === 'run';
   const legA = runc ? Math.sin(ph) * 0.9 : (o.pose === 'jump' ? 0.5 : 0.1);
@@ -1410,6 +1621,26 @@ function drawThief(x, y, opt) {
 /* ----- 오브젝트 ----- */
 function drawObstacle(o) {
   const g = GY();
+  if (o.type === 'ice') {
+    // 바닥 빙판 — 반투명 하늘색 + 반짝이는 광택선
+    const w = o.w;
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = '#bfe9ff';
+    ctx.beginPath(); ctx.ellipse(o.x, g + 3, w / 2, 12, 0, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const lx = o.x - w * 0.3 + i * w * 0.3;
+      ctx.beginPath(); ctx.moveTo(lx - 8, g - 1); ctx.lineTo(lx + 8, g - 5); ctx.stroke();
+    }
+    // 가장자리 반짝임
+    ctx.fillStyle = `rgba(255,255,255,${0.5 + 0.5 * Math.sin(globalT * 5)})`;
+    ctx.beginPath(); ctx.arc(o.x - w * 0.28, g - 2, 1.6, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(o.x + w * 0.24, g - 4, 1.6, 0, TAU); ctx.fill();
+    ctx.restore();
+    return;
+  }
   if (o.type === 'cone') {
     ctx.fillStyle = '#ff7f45';
     ctx.beginPath();
@@ -1636,7 +1867,7 @@ function button(x, y, w, h, label, cb, opt) {
     rr(x, y, w, h / 2, 16); ctx.fill();
   }
   ctx.fillStyle = o.disabled ? '#6b6f8f' : '#ffffff';
-  fitFont(label, w - 18, o.size || 20);
+  fitFont(label, w - 26, o.size || 20);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(label, x + w / 2, y + h / 2 + 1);
   ctx.textBaseline = 'alphabetic';
@@ -1644,13 +1875,20 @@ function button(x, y, w, h, label, cb, opt) {
 
 function drawHUD() {
   const pad = 14;
-  // 하트
-  for (let i = 0; i < P.maxHearts; i++) {
-    ctx.font = '24px sans-serif';
-    ctx.textAlign = 'left';
+  // 하트 (축적 가능 — 최대 6칸까지 아이콘, 그 이상은 ×N 로 표기)
+  const heartCap = 6;
+  const slots = Math.min(Math.max(P.maxHearts, P.hearts), heartCap);
+  ctx.font = '22px sans-serif';
+  ctx.textAlign = 'left';
+  for (let i = 0; i < slots; i++) {
     ctx.globalAlpha = i < P.hearts ? 1 : 0.22;
-    ctx.fillText('❤️', pad + i * 30, 36);
-    ctx.globalAlpha = 1;
+    ctx.fillText('❤️', pad + i * 27, 36);
+  }
+  ctx.globalAlpha = 1;
+  if (P.hearts > heartCap) {
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillStyle = '#ff8fb3';
+    ctx.fillText('×' + P.hearts, pad + slots * 27 + 2, 34);
   }
   // 코인 + 거리
   ctx.font = 'bold 20px sans-serif';
@@ -1739,8 +1977,9 @@ function drawHUD() {
     barY += 24;
   }
 
-  // 일시정지 버튼
-  button(W - 58, pad, 44, 44, '⏸', () => { state = 'pause'; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
+  // 사운드 켬/끔 버튼 (게임 중 바로 토글) + 일시정지 버튼
+  button(W - 108, pad, 44, 44, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: 'rgba(255,255,255,0.14)', size: 18 });
+  button(W - 58, pad, 44, 44, '⏸', () => { recordBest(); state = 'pause'; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
 
   // 조작 힌트
   if (run.hintT > 0) {
@@ -1915,12 +2154,13 @@ function drawPlayScene() {
     ctx.globalAlpha = 1;
   }
 
-  // 주인공
-  drawHeroine(PX(), P.y, {
+  // 주인공 (빙판에서 미끄러지면 앞으로 밀리고 살짝 기운다)
+  drawHeroine(PX() + P.slide, P.y, {
     pose: P.ground ? 'run' : 'jump',
     phase: run.dist * 0.12,
     punch: P.punchT > 0.06,
     hurt: P.hurtT > 0,
+    slip: P.iceT > 0,
     blink: P.inv > 0 && P.boostT <= 0,
   });
 
@@ -2073,17 +2313,29 @@ function drawMenu() {
   const bx = W / 2 - bw / 2;
   let by = H * 0.52;
   if (H >= 700) by = Math.max(by, ty + 240);
-  button(bx, by, bw, 62, T('btnStart'), () => { startGame(); }, { size: 24 });
-  by += 76;
+  if (heldRun) {
+    button(bx, by, bw, 62, T('btnResumeRun'), () => { resumeHeld(); }, { size: 22, color: '#e8a03c' });
+    by += 74;
+    button(bx, by, bw, 48, T('btnNewGame'), () => { newGame(); }, { size: 19 });
+    by += 60;
+  } else {
+    button(bx, by, bw, 62, T('btnStart'), () => { newGame(); }, { size: 24 });
+    by += 76;
+  }
   button(bx, by, bw, 52, T('btnShop'), () => { state = 'shop'; }, { color: '#4a55c9' });
   by += 64;
   const bw3 = (bw - 16) / 3;
   button(bx, by, bw3, 46, T('btnStory'), () => { startIntro(); }, { color: '#2a2d45', size: 15 });
   button(bx + bw3 + 8, by, bw3, 46, (save.muted ? '🔇 ' : '🔊 ') + T('btnSound'), () => {
-    save.muted = !save.muted; persist();
+    Sound.setMuted(!save.muted);
   }, { color: '#2a2d45', size: 15 });
   button(bx + (bw3 + 8) * 2, by, bw3, 46, '🌐 ' + (save.lang || detectLang()).toUpperCase(), () => {
     state = 'lang';
+  }, { color: '#2a2d45', size: 15 });
+  // 배경음악 선택 (기본 레트로 / 내 음악)
+  by += 56;
+  button(bx, by, bw, 44, '🎵 ' + T(save.bgmMode === 'custom' ? 'bgmCustom' : 'bgmRetro'), () => {
+    Sound.setBgmMode(save.bgmMode === 'custom' ? 'retro' : 'custom');
   }, { color: '#2a2d45', size: 15 });
 }
 
@@ -2182,7 +2434,26 @@ function drawPause() {
   ctx.fillText(T('pauseTitle'), W / 2, H * 0.35);
   const bw = Math.min(300, W * 0.7);
   button(W / 2 - bw / 2, H * 0.46, bw, 58, T('btnResume'), () => { state = 'play'; lastTime = 0; }, { size: 22 });
-  button(W / 2 - bw / 2, H * 0.46 + 72, bw, 50, T('btnGiveUp'), () => { endGame(); settleRun(); state = 'menu'; }, { color: '#2a2d45', size: 18 });
+  // 홈으로: 판을 버리지 않고 보관 → 메뉴에서 '이어서 하기' 가능
+  button(W / 2 - bw / 2, H * 0.46 + 72, bw, 50, T('btnHome'), () => {
+    recordBest();
+    heldRun = run; heldP = P;
+    run = null; P = null;
+    state = 'menu';
+  }, { color: '#2a2d45', size: 18 });
+}
+
+// 보관된 판 이어서 하기
+function resumeHeld() {
+  if (!heldRun) return;
+  run = heldRun; P = heldP;
+  heldRun = null; heldP = null;
+  lastTime = 0; state = 'play';
+}
+// 새 판 시작 — 보관된 판이 있으면 먼저 정산해 보상/기록을 저장한 뒤 버린다.
+function newGame() {
+  if (heldRun) { run = heldRun; P = heldP; settleRun(); heldRun = null; heldP = null; }
+  startGame();
 }
 
 function drawOver() {
