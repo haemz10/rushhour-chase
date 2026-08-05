@@ -228,6 +228,8 @@ function startGame() {
     bestNotified: false,             // 최고기록 돌파 배너 1회
     missionReward: 0, streakBonus: 0,
     boss: null, bossPending: 0, projectiles: [], // 보스전
+    playerShots: [],                             // 원거리 무기(거미줄/새총/불꽃) 발사체
+    stageUpT: 0, stageUpStage: 0, stageUpTheme: 0, // 스테이지 승급 연출
     smashes: 0, nearMisses: 0, feverCount: 0,    // 미션 추적
     goldCatches: 0, bossKills: 0,
     noHitDist: 0, bestNoHit: 0,                  // 노히트 거리
@@ -237,6 +239,7 @@ function startGame() {
     y: GY(), vy: 0, ground: true, jumps: 2,
     punchT: 0, inv: 0, hurtT: 0,
     shieldT: 0, magnetT: 0, boostT: 0,
+    weapon: null, weaponCharges: 0,   // 원거리 무기 장착 상태
     hearts: maxHearts, maxHearts,
   };
   state = 'play';
@@ -401,6 +404,27 @@ function doPunch() {
   if (P.punchT <= 0) {
     P.punchT = 0.22;
     Sound.sfx('punch');
+    // 원거리 무기 장착 중 + 대상(도둑/보스)이 아직 멀리 있으면 → 무기를 날려 잡는다
+    if (P.weapon && P.weaponCharges > 0 && run) {
+      if (run.thief && !run.thief.escaping && run.thief.dx >= 120) fireWeapon();
+      else if (run.boss && !run.boss.escaping && run.boss.dx >= 120) fireWeapon();
+    }
+  }
+}
+
+// 거미줄/새총/불꽃 발사체를 도둑을 향해 날린다
+function fireWeapon() {
+  P.weaponCharges--;
+  const px = PX();
+  run.playerShots.push({
+    kind: P.weapon, x: px + 26, y: P.y - 58,
+    vx: Math.max(820, run.speed + 560), t: 0, spin: 0,
+  });
+  Sound.sfx(P.weapon === 'fire' ? 'throw' : 'punch');
+  vibrate(25);
+  if (P.weaponCharges <= 0) {
+    P.weapon = null;
+    addFloat(px, P.y - 132, T('weaponOut'), '#cfd6ff', 1.0);
   }
 }
 
@@ -476,17 +500,47 @@ function coinJumpArc(x0, sp) {
   }
 }
 
+// 신규 장애물 다양화 — 기존 패턴과 독립된 확률로 가끔 등장 (스폰 1회당 하나)
+// 반환 true면 이번 스폰은 신규 장애물로 처리되었으니 기존 패턴을 건너뛴다.
+function trySpawnVariety(x, g, sp, hard, adv) {
+  if (run.mercyT > 0) return false;
+  if (Math.random() > 0.24) return false;          // 76%는 기존 패턴 사용
+  const O = run.obstacles, C = run.coinsArr;
+  const pool = ['hydrant', 'trashbags'];
+  if (adv) pool.push('cart');
+  if (adv && hard > 0.2) pool.push('drone');
+  const type = pool[Math.floor(Math.random() * pool.length)];
+  if (type === 'hydrant') {
+    // 소화전: 낮지만 펀치가 안 통한다 — 무조건 점프로 회피
+    O.push({ type: 'hydrant', x, w: 30, h: 44 });
+  } else if (type === 'trashbags') {
+    // 쓰레기봉투 더미: 펀치로 부수거나(코인) 점프로 넘기
+    O.push({ type: 'trashbags', x, w: 60, h: 64 });
+    if (Math.random() < 0.6) coinJumpArc(x - Math.max(120, sp * 0.28), sp);
+  } else if (type === 'cart') {
+    // 폭주 카트: 스크롤보다 빠르게 굴러온다 (펀치 또는 점프)
+    O.push({ type: 'cart', x: x + 180, w: 54, h: 58, vx: 80 + hard * 95, ph: rand(0, TAU) });
+  } else if (type === 'drone') {
+    // 택배 드론: 높이 날며 아래로 물건을 흘린다 (더블점프+펀치, 또는 아래로 통과)
+    O.push({ type: 'drone', x, w: 52, h: 34, yOff: rand(150, 188), ph: rand(0, TAU) });
+    for (let i = 0; i < 4; i++) C.push({ x: x - 30 + i * 40, y: g - 44, ph: i });
+  }
+  return true;
+}
+
 function spawnPattern() {
   const r = Math.random();
   const x = W + 140;
   const g = GY();
   const O = run.obstacles, C = run.coinsArr, U = run.powerups;
   const sp = Math.max(340, run.speed);
-  const hard = clamp(run.t / 60, 0, 1);            // 시간에 따른 난이도 (더 빨리 최고조)
-  const adv = run.stage >= 1 || run.t > 45;        // 스테이지 1: 구덩이·킥보드 해금 (앞당김)
-  const adv2 = run.stage >= 2 || run.t > 110;      // 스테이지 2: 더 빠른 킥보드
+  const hard = clamp(run.t / 78, 0, 1);            // 시간에 따른 난이도 (초반은 완만하게 상승)
+  const adv = run.stage >= 1 || run.t > 55;        // 스테이지 1: 구덩이·킥보드 해금
+  const adv2 = run.stage >= 2 || run.t > 120;      // 스테이지 2: 더 빠른 킥보드
 
-  if (adv && !run.mercyT && r < 0.10) {
+  if (trySpawnVariety(x, g, sp, hard, adv)) {
+    // 신규 장애물로 처리됨 — 기존 패턴 스킵
+  } else if (adv && !run.mercyT && r < 0.10) {
     // 맨홀 구덩이: 점프로만 회피 (점프 궤적을 따라가는 코인으로 점프 유도)
     O.push({ type: 'pit', x, w: 100, h: 0 });
     coinJumpArc(x - Math.max(120, sp * 0.28), sp);
@@ -527,22 +581,30 @@ function spawnPattern() {
     for (let i = 0; i < 6; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
   } else {
     // 파워업 (고전 중이면 하트 확률을 몰래 올려준다 — DDA)
-    const pr = Math.random();
     const heartBias = (save.skill < 0 || P.hearts <= 1) ? 0.30 : 0.10;
-    let type = 'magnet';
-    if (pr < heartBias) type = 'heart';
-    else if (pr < heartBias + 0.28) type = 'magnet';
-    else if (pr < heartBias + 0.52) type = 'shield';
-    else type = 'boost';
+    let type;
+    if (adv && Math.random() < 0.5) {
+      // 원거리 무기: 거미줄 / 새총 / 불꽃 (스테이지1+ 에서만)
+      type = ['web', 'sling', 'fire'][Math.floor(rand(0, 3))];
+    } else {
+      const pr = Math.random();
+      if (pr < heartBias) type = 'heart';
+      else if (pr < heartBias + 0.30) type = 'magnet';
+      else if (pr < heartBias + 0.55) type = 'shield';
+      else type = 'boost';
+    }
     U.push({ type, x, y: g - 70 - rand(0, 60), ph: rand(0, TAU) });
   }
   // 간격: "점프 체공 0.75초 + 반응 여유" 기반 시간 단위 (착지 지점 함정 방지)
   // DDA(실력↓ → 넓게) · 자비 구간 더 넓게 · 스테이지가 오를수록 타이트하게
+  // 초반 25초는 간격을 넉넉히 벌려(1.4 → 1.0) 손가락이 반응할 시간을 확보한다.
+  const earlyMul = 1 + 0.4 * (1 - clamp(run.t / 25, 0, 1));
   const gapMul = clamp(1 - save.skill * 0.05, 0.80, 1.3)
+    * earlyMul
     * (run.mercyT > 0 ? 1.35 : 1)
     * (1 - Math.min(0.22, run.stage * 0.055));
-  // 착지 안전 하한(sp*0.8): 점프 수평거리(sp*0.75)보다 살짝 뒤 — 아슬아슬하지만 착지 즉시 충돌은 불가
-  run.spawnD = Math.max((rand(110, 280) + sp * 0.62) * gapMul, sp * 0.80);
+  // 착지 안전 하한(sp*0.85): 점프 수평거리(sp*0.75)보다 뒤 — 아슬아슬하지만 착지 즉시 충돌은 불가
+  run.spawnD = Math.max((rand(120, 290) + sp * 0.62) * gapMul, sp * 0.85);
 }
 
 /* ---------------- 도둑 ---------------- */
@@ -563,7 +625,8 @@ function spawnThief() {
   }
 }
 
-function catchThief() {
+function catchThief(method) {
+  method = method || 'punch';
   const idx = run.items % 3;
   const golden = run.thief.golden;
   run.items++; run.catches++;
@@ -572,11 +635,14 @@ function catchThief() {
   const bonus = (100 + run.stage * 50) * (golden ? 4 : 1);
   run.coins += bonus;
   run.slowmo = 0.55; run.shake = 0.35;
-  Sound.sfx(golden ? 'gold' : 'catch');
+  Sound.sfx(golden ? 'gold' : method === 'fire' ? 'throw' : 'catch');
   vibrate(golden ? 120 : 60);
   const tx = PX() + run.thief.dx;
-  burst(tx, GY() - 60, golden ? 40 : 26, '#ffd166', 4, true);
-  burst(tx, GY() - 60, 14, golden ? '#fff1c4' : '#ff8fb3', 3, true);
+  const catchCol = method === 'fire' ? '#ff8a3c' : method === 'web' ? '#dfe7ff' : '#ffd166';
+  burst(tx, GY() - 60, golden ? 40 : 26, catchCol, 4, true);
+  burst(tx, GY() - 60, 14, golden ? '#fff1c4' : method === 'fire' ? '#ffb24a' : '#ff8fb3', 3, true);
+  // 무기별 짤막한 한 방 문구
+  if (method !== 'punch') addFloat(tx, GY() - 150, T(method === 'web' ? 'fxWeb' : method === 'sling' ? 'fxSling' : 'fxFire'), catchCol, 1.1);
   if (golden) {
     run.goldCatches++;
     addFloat(W / 2, H * 0.32, T('goldCatch', bonus), '#ffe066', 1.6);
@@ -586,7 +652,7 @@ function catchThief() {
   } else {
     addFloat(W / 2, H * 0.32, T('gotItem', ITEM_ICONS[idx], L.items[idx], bonus), '#ffd166', 1.5);
   }
-  run.caughtAnim = { x: tx, y: GY(), t: 0 };
+  run.caughtAnim = { x: tx, y: GY(), t: 0, method };
   run.thief = null;
   run.thiefTimer = rand(9, 14);
 
@@ -598,7 +664,11 @@ function catchThief() {
     run.coins += 300;
     save.skill = Math.min(6, save.skill + 1);
     Sound.sfx('clear');
-    addFloat(W / 2, H * 0.45, T('stageClear'), '#7bffc8', 1.4);
+    // 레벨업(다음 구역 진입) 시각 연출 트리거
+    run.stageUpT = 2.4;
+    run.stageUpStage = run.stage + 1;   // 표시용(1-based)
+    run.stageUpTheme = run.theme;
+    run.slowmo = Math.max(run.slowmo, 0.9);
     addFloat(W / 2, H * 0.45 + 44, T('stageClear2'), '#ffffff', 1.0);
     // 스테이지 3, 6, 9… 클리어 직후엔 도둑 두목이 직접 나선다!
     if (run.stage % 3 === 0) run.bossPending = 3.5;
@@ -647,6 +717,28 @@ function bossEscape() {
   run.boss.escaping = true;
   Sound.sfx('escape');
   addFloat(W * 0.6, GY() - 240, T('bossTaunt'), '#ff8fb3', 1.2);
+}
+
+// 원거리 무기로 보스에게 한 방 (근접 펀치와 동일한 대미지)
+function weaponHitBoss(kind) {
+  const b = run.boss;
+  if (!b) return;
+  b.hp--;
+  b.staggerT = 0.55;
+  run.slowmo = 0.25; run.shake = 0.3;
+  Sound.sfx('bossHit');
+  vibrate(70);
+  const bx = PX() + b.dx;
+  const col = kind === 'fire' ? '#ff8a3c' : kind === 'web' ? '#dfe7ff' : '#8fe3ff';
+  burst(bx, GY() - 70, 18, col, 4, true);
+  run.coins += 20;
+  run.combo += 5; run.comboT = 3;
+  run.bestCombo = Math.max(run.bestCombo, run.combo);
+  if (b.hp <= 0) bossDefeated();
+  else {
+    b.dx += 240;
+    addFloat(bx, GY() - 175, ['💢', '😤', '🤬'][Math.floor(rand(0, 3))], '#ffffff', 1.3);
+  }
 }
 
 // 보스전 중에는 장애물 대신 코인/회복 위주로만 스폰 (결투에 집중)
@@ -717,10 +809,15 @@ function updatePlay(dt0) {
   run.t += dt;
   run.hintT = Math.max(0, run.hintT - dt0);
 
-  // 속도: 시간 + 스테이지(성공할수록 빠름) × 숨겨진 DDA 보정 — 가속을 높여 긴장감 유지
-  // 초반부터 빠르게 붙고(초기 +90) 상한도 높여 반응 압박을 키운다
-  const target = (baseSpeed() + 90 + Math.min(640, run.t * 17) + run.stage * 62) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
-  run.speed = lerp(run.speed, target, 1 - Math.pow(0.001, dt));
+  // 속도 완급 조절: 초반 ~20초는 반응 가능하게 여유롭게 시작하고,
+  // 이차 곡선(ease-in)으로 서서히 붙은 뒤, 20초 이후엔 은근한 압박을 지속한다.
+  // 스테이지가 오를수록(성공할수록) 기본 속도가 올라가고 숨겨진 DDA로 미세 보정.
+  const warm = clamp(run.t / 20, 0, 1);            // 첫 20초 동안 0 → 1
+  const ramp = 430 * warm * warm;                  // 시작은 완만, 후반부로 갈수록 가팔라짐
+  const creep = Math.max(0, run.t - 20) * 4.2;     // 20초 이후 지속되는 은근한 상승
+  const target = (baseSpeed() + ramp + creep + run.stage * 58) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
+  // 속도 변화를 살짝 부드럽게 (급가속 체감 완화)
+  run.speed = lerp(run.speed, target, 1 - Math.pow(0.004, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
   run.noHitDist += sp * dt / 10;
@@ -789,17 +886,18 @@ function updatePlay(dt0) {
     }
 
     let oTop, oBot;
-    if (o.type === 'pigeon') {
+    if (o.type === 'pigeon' || o.type === 'drone') {
       const bob = Math.sin(globalT * 4 + o.ph) * 8;
       oBot = g - o.yOff + bob;
       oTop = oBot - o.h;
     } else {
       oBot = g; oTop = g - o.h;
     }
-    // 펀치 히트
-    if (P.punchT > 0.1 && (o.type === 'boxes' || o.type === 'pigeon' || o.type === 'cone' || o.type === 'rider')) {
+    // 펀치 히트 (소화전 hydrant 은 펀치 불가 — 점프 전용)
+    if (P.punchT > 0.1 && (o.type === 'boxes' || o.type === 'pigeon' || o.type === 'cone' || o.type === 'rider' || o.type === 'trashbags' || o.type === 'cart' || o.type === 'drone')) {
       if (oL < px + 105 && oR > px + 10 && oTop < P.y + 5 && oBot > P.y - 150) {
-        smash(o, o.type === 'pigeon' ? '#cfd6ff' : o.type === 'rider' ? '#8fe3ff' : '#d9a05b');
+        const sc = o.type === 'pigeon' || o.type === 'drone' ? '#cfd6ff' : o.type === 'rider' || o.type === 'cart' ? '#8fe3ff' : '#d9a05b';
+        smash(o, sc);
         continue;
       }
     }
@@ -811,7 +909,7 @@ function updatePlay(dt0) {
       if (state !== 'play') return;
     }
     // 니어미스 추적: 겹치는 동안 발끝~장애물 상단의 최소 간격 기록
-    if (o.type !== 'pigeon' && !o.nm) {
+    if (o.type !== 'pigeon' && o.type !== 'drone' && !o.nm) {
       if (oL < pR && oR > pL && P.y < oTop) {
         const c = oTop - P.y;
         o.minC = o.minC === undefined ? c : Math.min(o.minC, c);
@@ -864,6 +962,10 @@ function updatePlay(dt0) {
       if (u.type === 'heart')  {
         if (P.hearts < P.maxHearts) { P.hearts++; addFloat(px, P.y - 120, T('puHeal'), '#ff8fb3', 1.1); }
         else { run.coins += 30; addFloat(px, P.y - 120, T('puHeartFull'), '#ffd166', 1); }
+      }
+      if (u.type === 'web' || u.type === 'sling' || u.type === 'fire') {
+        P.weapon = u.type; P.weaponCharges = 3;
+        addFloat(px, P.y - 122, T(u.type === 'web' ? 'puWeb' : u.type === 'sling' ? 'puSling' : 'puFire'), '#dfe7ff', 1.15);
       }
       burst(u.x, u.y, 12, '#ffffff', 3, true);
     }
@@ -948,6 +1050,29 @@ function updatePlay(dt0) {
   }
   run.projectiles = run.projectiles.filter(p => !p.dead && p.x > -80);
 
+  // 원거리 무기 발사체 (거미줄/새총/불꽃)
+  for (const s of run.playerShots) {
+    s.t += dt0;
+    s.spin += dt0 * 16;
+    s.x += s.vx * dt;
+    // 도둑 명중 → 원거리로 잡기
+    if (run.thief && !run.thief.escaping) {
+      if (s.x >= px + run.thief.dx - 22) {
+        s.dead = true;
+        catchThief(s.kind);
+        continue;
+      }
+    } else if (run.boss && !run.boss.escaping && run.boss.staggerT <= 0) {
+      if (s.x >= px + run.boss.dx - 30) {
+        s.dead = true;
+        weaponHitBoss(s.kind);
+        continue;
+      }
+    }
+    if (s.x > W + 90) s.dead = true;
+  }
+  run.playerShots = run.playerShots.filter(s => !s.dead);
+
   // 도둑 (보스전 중에는 일반 도둑 미등장)
   if (run.thief) {
     const th = run.thief;
@@ -958,18 +1083,32 @@ function updatePlay(dt0) {
     th.vy += 2600 * dt;
     th.y += th.vy * dt;
     if (th.y >= g) { th.y = g; th.vy = 0; if (th.jumpT <= 0) { th.vy = -rand(520, 760); th.jumpT = rand(0.7, 1.4); } }
+    // 레벨이 높아지면 도둑이 약올리며 '메롱' 제스처를 한다 (플레이어 자극 → 재도전 욕구)
+    th.tauntT = Math.max(0, (th.tauntT || 0) - dt);
+    if (run.stage >= 2 && !th.escaping) {
+      th.tauntCd = (th.tauntCd === undefined ? rand(1.4, 2.8) : th.tauntCd) - dt;
+      if (th.tauntCd <= 0) {
+        th.tauntT = 0.95;
+        th.tauntCd = rand(2.6, 4.6);
+        addFloat(px + Math.min(th.dx, W * 0.72), th.y - 150, T('tauntShout'), '#ffd166', 1.15);
+        Sound.sfx('near');
+      }
+    }
     if (th.escaping && th.dx > W + 250) {
       run.thief = null;
       run.thiefTimer = rand(7, 11);
     }
-    // 잡기!
+    // 잡기! (근접 펀치)
     if (!th.escaping && P.punchT > 0.1 && th.dx < 115) {
-      catchThief();
+      catchThief('punch');
     }
   } else if (!run.boss && run.bossPending <= 0) {
     run.thiefTimer -= dt;
     if (run.thiefTimer <= 0) spawnThief();
   }
+
+  // 스테이지 승급 연출 타이머
+  run.stageUpT = Math.max(0, run.stageUpT - dt0);
 
   // 잡힌 도둑 연출
   if (run.caughtAnim) {
@@ -1213,13 +1352,27 @@ function drawThief(x, y, opt) {
   // 마스크 얼굴
   ctx.fillStyle = '#12121f';
   ctx.beginPath(); ctx.arc(9, -75, 8, -0.6, 0.9); ctx.lineTo(9, -75); ctx.fill();
-  // 눈 (초조)
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(11, -77, 3, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#111';
-  ctx.beginPath(); ctx.arc(12, -77, 1.5, 0, TAU); ctx.fill();
+  if (o.taunt) {
+    // 약올리는 '메롱' — 윙크 + 쭉 내민 혀
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(8, -78); ctx.lineTo(15, -77); ctx.stroke();   // 감은 눈(윙크)
+    ctx.fillStyle = '#ff6b8a';
+    rr(9, -71, 8, 11, 4); ctx.fill();                                          // 혀
+    ctx.fillStyle = '#e0466a';
+    ctx.fillRect(12, -70, 2, 8);
+    // 손가락 브이 (놀리는 제스처)
+    ctx.strokeStyle = o.golden ? '#dba844' : '#3a3a5c'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(20, -58); ctx.lineTo(30, -74); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(20, -58); ctx.lineTo(34, -66); ctx.stroke();
+  } else {
+    // 눈 (초조)
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(11, -77, 3, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(12, -77, 1.5, 0, TAU); ctx.fill();
+  }
   // 땀방울
-  if (!o.tumble) {
+  if (!o.tumble && !o.taunt) {
     ctx.fillStyle = '#8fe3ff';
     const sw = (globalT * 3) % 1;
     ctx.globalAlpha = 1 - sw;
@@ -1330,6 +1483,83 @@ function drawObstacle(o) {
     ctx.beginPath(); ctx.moveTo(o.x - 2, y - 20); ctx.quadraticCurveTo(o.x - 12, y - 30 - flap, o.x - 22, y - 26 - flap); ctx.stroke();
     ctx.fillStyle = '#111';
     ctx.beginPath(); ctx.arc(o.x + 16, y - 26, 1.6, 0, TAU); ctx.fill();
+  } else if (o.type === 'hydrant') {
+    // 소화전 (펀치 불가 — 점프 전용)
+    ctx.fillStyle = '#e23b3b';
+    rr(o.x - o.w / 2, g - o.h, o.w, o.h, 8); ctx.fill();
+    ctx.fillStyle = '#b32020';
+    rr(o.x - o.w / 2, g - 12, o.w, 12, 4); ctx.fill();           // 받침
+    ctx.fillStyle = '#ff6b6b';
+    ctx.beginPath(); ctx.arc(o.x, g - o.h, o.w * 0.42, Math.PI, 0); ctx.fill(); // 둥근 머리
+    // 양옆 배출구 + 앞 캡
+    ctx.fillStyle = '#f4c542';
+    ctx.beginPath(); ctx.arc(o.x, g - o.h * 0.55, 5, 0, TAU); ctx.fill();
+    ctx.fillRect(o.x - o.w / 2 - 4, g - o.h * 0.6, 5, 9);
+    ctx.fillRect(o.x + o.w / 2 - 1, g - o.h * 0.6, 5, 9);
+  } else if (o.type === 'trashbags') {
+    // 쓰레기봉투 더미 (펀치로 부수기)
+    const cols = ['#3d4a2e', '#4a5a38', '#33402a'];
+    const set = [[-14, 20, 22], [12, 22, 24], [-2, 40, 30]];
+    for (let i = 0; i < set.length; i++) {
+      const [dx, r2, gy] = set[i];
+      ctx.fillStyle = cols[i];
+      ctx.beginPath(); ctx.ellipse(o.x + dx, g - gy + 4, r2, gy, 0, 0, TAU); ctx.fill();
+      // 묶은 매듭
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.beginPath(); ctx.ellipse(o.x + dx, g - gy * 2 + 8, 5, 7, 0, 0, TAU); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(o.x - 20, g - 22); ctx.lineTo(o.x - 8, g - 30); ctx.stroke();
+  } else if (o.type === 'cart') {
+    // 폭주 쇼핑카트 (펀치 또는 점프)
+    const wob = Math.sin(globalT * 12 + o.ph) * 2;
+    ctx.save();
+    ctx.translate(o.x, g + wob * 0.3);
+    // 속도선
+    ctx.strokeStyle = 'rgba(143,227,255,0.45)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(24 + i * 9, -20 - i * 12); ctx.lineTo(44 + i * 9, -20 - i * 12); ctx.stroke(); }
+    // 바구니 (사다리꼴 격자)
+    ctx.strokeStyle = '#cdd6e6'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-24, -o.h); ctx.lineTo(20, -o.h); ctx.lineTo(14, -14); ctx.lineTo(-18, -14); ctx.closePath(); ctx.stroke();
+    for (let i = 1; i < 4; i++) { const t = i / 4; ctx.beginPath(); ctx.moveTo(-24 + t * 44, -o.h); ctx.lineTo(-18 + t * 32, -14); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(-22, -o.h * 0.6); ctx.lineTo(17, -o.h * 0.6); ctx.stroke();
+    // 손잡이
+    ctx.beginPath(); ctx.moveTo(20, -o.h); ctx.lineTo(30, -o.h - 10); ctx.stroke();
+    // 바퀴
+    ctx.fillStyle = '#222738';
+    ctx.beginPath(); ctx.arc(-14, -6, 6, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(10, -6, 6, 0, TAU); ctx.fill();
+    ctx.restore();
+  } else if (o.type === 'drone') {
+    // 택배 드론 (높이 날며 아래로 통과 or 더블점프+펀치)
+    const bob = Math.sin(globalT * 4 + o.ph) * 8;
+    const y = g - o.yOff + bob;
+    const spin = globalT * 30;
+    ctx.save();
+    ctx.translate(o.x, y);
+    // 프로펠러 암
+    ctx.strokeStyle = '#3c4266'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-22, -6); ctx.lineTo(22, -6); ctx.stroke();
+    for (const px2 of [-22, 22]) {
+      ctx.strokeStyle = 'rgba(143,227,255,0.7)'; ctx.lineWidth = 2;
+      const c = Math.cos(spin) * 12, s = Math.sin(spin) * 3;
+      ctx.beginPath(); ctx.moveTo(px2 - c, -6 - s); ctx.lineTo(px2 + c, -6 + s); ctx.stroke();
+    }
+    // 본체
+    ctx.fillStyle = '#4a5480';
+    rr(-16, -6, 32, 16, 6); ctx.fill();
+    // 매단 택배 상자
+    ctx.strokeStyle = '#8fa0c8'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, 10); ctx.lineTo(0, 16); ctx.stroke();
+    ctx.fillStyle = '#c98d4a';
+    rr(-9, 16, 18, 15, 3); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.moveTo(0, 16); ctx.lineTo(0, 31); ctx.stroke();
+    // 상태등
+    ctx.fillStyle = `rgba(255,90,90,${0.5 + 0.5 * Math.sin(globalT * 8)})`;
+    ctx.beginPath(); ctx.arc(0, 2, 2.5, 0, TAU); ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -1352,8 +1582,8 @@ function drawCoin(c) {
 
 function drawPowerup(u) {
   const bob = Math.sin(globalT * 3 + u.ph) * 6;
-  const icons = { magnet: '🧲', shield: '🛡️', boost: '⚡', heart: '❤️' };
-  const colors = { magnet: '#8fe3ff', shield: '#9fd8ff', boost: '#ffd166', heart: '#ff8fb3' };
+  const icons = { magnet: '🧲', shield: '🛡️', boost: '⚡', heart: '❤️', web: '🕸️', sling: '🎯', fire: '🔥' };
+  const colors = { magnet: '#8fe3ff', shield: '#9fd8ff', boost: '#ffd166', heart: '#ff8fb3', web: '#dfe7ff', sling: '#b9f5c9', fire: '#ff8a3c' };
   ctx.save();
   ctx.translate(u.x, u.y + bob);
   ctx.fillStyle = colors[u.type];
@@ -1468,6 +1698,22 @@ function drawHUD() {
     }
   }
 
+  // 장착한 원거리 무기 + 남은 발사 횟수 (펀치로 도둑을 멀리서 잡는다)
+  if (P.weapon) {
+    const wic = { web: '🕸️', sling: '🎯', fire: '🔥' }[P.weapon];
+    const wcol = { web: '#dfe7ff', sling: '#b9f5c9', fire: '#ff8a3c' }[P.weapon];
+    ctx.textAlign = 'left';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(wic, pad, barY + 8);
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillStyle = wcol;
+    ctx.fillText('×' + P.weaponCharges, pad + 28, barY + 8);
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(T('weaponHint'), pad + 62, barY + 8);
+    barY += 24;
+  }
+
   // 일시정지 버튼
   button(W - 58, pad, 44, 44, '⏸', () => { state = 'pause'; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
 
@@ -1550,7 +1796,7 @@ function drawPlayScene() {
 
   // 도둑
   if (run.thief) {
-    drawThief(PX() + run.thief.dx, run.thief.y, { phase: run.dist * 0.11, golden: run.thief.golden });
+    drawThief(PX() + run.thief.dx, run.thief.y, { phase: run.dist * 0.11, golden: run.thief.golden, taunt: run.thief.tauntT > 0 });
   }
   // 도둑 두목 (1.4배 크기 + 머리 위 HP)
   if (run.boss) {
@@ -1583,6 +1829,39 @@ function drawPlayScene() {
     ctx.strokeStyle = 'rgba(255,255,255,0.4)';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(14, 0); ctx.stroke();
+    ctx.restore();
+  }
+  // 플레이어 원거리 무기 발사체 (거미줄/새총/불꽃)
+  for (const s of run.playerShots) {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    if (s.kind === 'web') {
+      // 거미줄: 손에서 이어지는 줄 + 회전하는 그물
+      ctx.strokeStyle = 'rgba(223,231,255,0.5)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-(s.x - (PX() + 26)), 0); ctx.lineTo(0, 0); ctx.stroke();
+      ctx.rotate(s.spin);
+      ctx.strokeStyle = '#eef2ff'; ctx.lineWidth = 2.5;
+      for (let i = 0; i < 3; i++) { ctx.rotate(Math.PI / 3); ctx.beginPath(); ctx.moveTo(-11, 0); ctx.lineTo(11, 0); ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(0, 0, 7, 0, TAU); ctx.stroke();
+    } else if (s.kind === 'sling') {
+      // 새총 탄환: 작은 조약돌 + 궤적
+      ctx.strokeStyle = 'rgba(185,245,201,0.6)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-26, 0); ctx.lineTo(-6, 0); ctx.stroke();
+      ctx.fillStyle = '#8a6b4a';
+      ctx.beginPath(); ctx.arc(0, 0, 6, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#b9f5c9';
+      ctx.beginPath(); ctx.arc(-2, -2, 2, 0, TAU); ctx.fill();
+    } else {
+      // 불꽃: 타오르는 화염구
+      ctx.rotate(s.spin);
+      const fl = 0.7 + 0.3 * Math.sin(globalT * 20);
+      ctx.fillStyle = `rgba(255,120,40,${fl})`;
+      ctx.beginPath(); ctx.arc(0, 0, 11, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath(); ctx.arc(0, 0, 6, 0, TAU); ctx.fill();
+      ctx.fillStyle = 'rgba(255,80,40,0.5)';
+      ctx.beginPath(); ctx.moveTo(-16, 0); ctx.lineTo(-4, -6); ctx.lineTo(-4, 6); ctx.closePath(); ctx.fill();
+    }
     ctx.restore();
   }
   // 잡힌 도둑 (나뒹굴기)
@@ -1647,6 +1926,57 @@ function drawPlayScene() {
   ctx.restore();
 
   drawHUD();
+  drawStageUp();
+}
+
+// 레벨업(다음 구역 진입) 연출 오버레이
+function drawStageUp() {
+  if (run.stageUpT <= 0) return;
+  const dur = 2.4;
+  const el = dur - run.stageUpT;                 // 경과 시간
+  const inA = clamp(el / 0.35, 0, 1);            // 등장 페이드
+  const outA = clamp(run.stageUpT / 0.5, 0, 1);  // 퇴장 페이드
+  const a = Math.min(inA, outA);
+  const cy = H * 0.40;
+  const slide = (1 - inA) * -46;
+  ctx.save();
+  ctx.globalAlpha = a;
+  // 리본 배경
+  ctx.fillStyle = 'rgba(10,12,30,0.55)';
+  ctx.fillRect(0, cy - 70 + slide, W, 140);
+  ctx.fillStyle = 'rgba(255,209,102,0.9)';
+  ctx.fillRect(0, cy - 70 + slide, W, 4);
+  ctx.fillRect(0, cy + 66 + slide, W, 4);
+  ctx.textAlign = 'center';
+  // 회수한 3종 아이콘 반짝
+  ctx.font = '22px sans-serif';
+  for (let i = 0; i < 3; i++) {
+    ctx.globalAlpha = a * (0.55 + 0.45 * Math.abs(Math.sin(globalT * 6 + i)));
+    ctx.fillText(ITEM_ICONS[i], W / 2 - 34 + i * 34, cy - 44 + slide);
+  }
+  ctx.globalAlpha = a;
+  // LEVEL UP! (초반 살짝 튀어오름)
+  const pop = 1 + Math.max(0, 0.28 - el) * 2.2;
+  ctx.save();
+  ctx.translate(W / 2, cy - 12 + slide);
+  ctx.scale(pop, pop);
+  fitFont(T('levelUp'), W * 0.8, 30, '900');
+  ctx.fillStyle = '#ffe066';
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 5;
+  ctx.strokeText(T('levelUp'), 0, 0);
+  ctx.fillText(T('levelUp'), 0, 0);
+  ctx.restore();
+  // STAGE X · 구역 이름
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(T('stageLbl', run.stageUpStage, L.themes[run.stageUpTheme]), W / 2, cy + 20 + slide);
+  // 다음 구역 진행바 (차오르는 연출)
+  const bw = Math.min(360, W * 0.7), bx = W / 2 - bw / 2, byy = cy + 40 + slide;
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  rr(bx, byy, bw, 10, 5); ctx.fill();
+  ctx.fillStyle = '#7bffc8';
+  rr(bx, byy, bw * clamp(el / 1.1, 0, 1), 10, 5); ctx.fill();
+  ctx.restore();
 }
 
 /* ---------------- 메뉴 ---------------- */
