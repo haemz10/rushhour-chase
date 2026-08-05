@@ -551,9 +551,9 @@ function spawnPattern() {
   const g = GY();
   const O = run.obstacles, C = run.coinsArr, U = run.powerups;
   const sp = Math.max(340, run.speed);
-  const hard = clamp(run.t / 78, 0, 1);            // 시간에 따른 난이도 (초반은 완만하게 상승)
-  const adv = run.stage >= 1 || run.t > 55;        // 스테이지 1: 구덩이·킥보드 해금
-  const adv2 = run.stage >= 2 || run.t > 120;      // 스테이지 2: 더 빠른 킥보드
+  const hard = clamp(run.t / 95, 0, 1);            // 난이도 상승을 더 완만하게 (초반 여유)
+  const adv = run.stage >= 1 || run.t > 65;        // 스테이지 1: 구덩이·킥보드 해금 (더 늦게)
+  const adv2 = run.stage >= 2 || run.t > 130;      // 스테이지 2: 더 빠른 킥보드
 
   if (trySpawnVariety(x, g, sp, hard, adv)) {
     // 신규 장애물로 처리됨 — 기존 패턴 스킵
@@ -573,7 +573,7 @@ function spawnPattern() {
     O.push({ type: 'boxes', x, w: 58, h: 112 });
     C.push({ x: x + 110, y: g - 44, ph: 0 });
     C.push({ x: x + 154, y: g - 44, ph: 1 });
-  } else if (!run.mercyT && r < 0.62 + hard * 0.08 + run.stage * 0.015) {
+  } else if (!run.mercyT && adv && r < 0.55 + hard * 0.07 + run.stage * 0.02) {
     // 이단 콤보 — 간격을 현재 속도로 계산해 "착지하자마자 충돌"을 없앤다:
     // 근접형(한 번의 점프로 둘 다 넘기) 또는 원거리형(착지 후 여유 뒤 재점프)
     O.push({ type: 'cone', x, w: 34, h: 46 });
@@ -581,8 +581,8 @@ function spawnPattern() {
     const d2 = nearPair ? sp * rand(0.34, 0.46) : sp * rand(0.98, 1.15);
     if (nearPair) O.push({ type: 'cone', x: x + d2, w: 34, h: 46 });
     else O.push({ type: Math.random() < 0.5 ? 'barrier' : 'cone', x: x + d2, w: 50, h: 58 });
-  } else if (!run.mercyT && adv && hard > 0.35 && r < 0.70) {
-    // 삼단 압박: 콘 → 공중 비둘기(점프 중 펀치!) → 콘
+  } else if (!run.mercyT && adv && hard > 0.55 && run.stage >= 1 && r < 0.70) {
+    // 삼단 압박: 콘 → 공중 비둘기(점프 중 펀치!) → 콘 (충분히 익숙해진 뒤에만)
     O.push({ type: 'cone', x, w: 34, h: 46 });
     O.push({ type: 'pigeon', x: x + sp * 0.35, w: 52, h: 38, yOff: rand(118, 138), ph: rand(0, TAU) });
     O.push({ type: 'cone', x: x + sp * rand(1.0, 1.15), w: 34, h: 46 });
@@ -610,28 +610,29 @@ function spawnPattern() {
       else if (pr < heartBias + 0.55) type = 'shield';
       else type = 'boost';
     }
-    U.push({ type, x, y: g - 70 - rand(0, 60), ph: rand(0, TAU) });
+    // 한 번의 점프로 편하게 닿는 높이대(g-82 ~ g-116)에 배치 — 획득 난이도 완화
+    U.push({ type, x, y: g - 82 - rand(0, 34), ph: rand(0, TAU) });
   }
   // 간격: "점프 체공 0.75초 + 반응 여유" 기반 시간 단위 (착지 지점 함정 방지)
   // DDA(실력↓ → 넓게) · 자비 구간 더 넓게 · 스테이지가 오를수록 타이트하게
-  // 초반 25초는 간격을 넉넉히 벌려(1.4 → 1.0) 손가락이 반응할 시간을 확보한다.
-  const earlyMul = 1 + 0.4 * (1 - clamp(run.t / 25, 0, 1));
-  const gapMul = clamp(1 - save.skill * 0.05, 0.80, 1.3)
+  // 초반 40초는 간격을 넉넉히 벌려(1.5 → 1.0) 반응·회복 시간을 충분히 확보한다.
+  const earlyMul = 1 + 0.5 * (1 - clamp(run.t / 40, 0, 1));
+  const gapMul = clamp(1 - save.skill * 0.04, 0.85, 1.35)
     * earlyMul
-    * (run.mercyT > 0 ? 1.35 : 1)
-    * (1 - Math.min(0.22, run.stage * 0.055));
-  // 착지 안전 하한(sp*0.85): 점프 수평거리(sp*0.75)보다 뒤 — 아슬아슬하지만 착지 즉시 충돌은 불가
-  run.spawnD = Math.max((rand(120, 290) + sp * 0.62) * gapMul, sp * 0.85);
+    * (run.mercyT > 0 ? 1.4 : 1)
+    * (1 - Math.min(0.18, run.stage * 0.045));
+  // 착지 안전 하한(sp*1.0): 점프 수평거리(sp*0.75)보다 충분히 뒤 — 착지 즉시 충돌 불가 + 여유
+  run.spawnD = Math.max((rand(170, 330) + sp * 0.72) * gapMul, sp * 1.0);
   // 이번 패턴에서 장애물과 겹친 코인 정리
   removeCoinsOverlappingObstacles();
 }
 
 /* ---------------- 도둑 ---------------- */
 function spawnThief() {
-  // 등장 거리는 화면 폭과 무관하게 380~480px로 제한 (가로모드에서 추격이 늘어지지 않게)
+  // 등장 거리를 더 가깝게(300~400px) — 몇 초 안에 따라잡을 수 있게 (진행성↑)
   const golden = Math.random() < 0.10; // ✨ 황금 도둑: 낮은 확률의 잭팟 (가변 비율 보상)
   run.thief = {
-    dx: clamp(W * 0.72, 380, 480), y: GY(), vy: 0,
+    dx: clamp(W * 0.6, 300, 400), y: GY(), vy: 0,
     jumpT: rand(0.6, 1.2), escaping: false, gone: false, golden,
   };
   run.hurtInChase = 0;
@@ -677,7 +678,7 @@ function catchThief(method) {
   }
   run.caughtAnim = { x: tx, y: GY(), t: 0, method };
   run.thief = null;
-  run.thiefTimer = rand(9, 14);
+  run.thiefTimer = rand(6, 9);   // 다음 도둑이 더 빨리 등장 (진행 기회↑)
 
   if (run.items % 3 === 0) {
     // 세 가지 모두 회수 → 스테이지 클리어 (성공은 곧 난이도 상승)
@@ -800,9 +801,9 @@ function hurt(obs) {
   vibrate(90);
   burst(PX(), P.y - 40, 12, '#ff6b6b', 3);
   if (run.thief && !run.thief.escaping) {
-    run.thief.dx += 200;
+    run.thief.dx += 120;                 // 피격 시 도둑이 덜 멀어지게 (완화)
     run.hurtInChase++;
-    if (run.hurtInChase >= 2) thiefEscape();
+    if (run.hurtInChase >= 3) thiefEscape(); // 3번 맞아야 놓침 (기존 2 → 3, 진행 가능성↑)
   }
   if (run.boss && !run.boss.escaping) {
     run.boss.dx += 180;
@@ -832,15 +833,16 @@ function updatePlay(dt0) {
   run.t += dt;
   run.hintT = Math.max(0, run.hintT - dt0);
 
-  // 속도 완급 조절: 급격한 계단식 상승 없이 "부드럽고 연속적으로" 서서히 빨라진다.
-  // 첫 32초에 걸쳐 선형+약한 이차로 완만히 오르고, 이후엔 아주 은근한 지속 상승.
-  const warm = clamp(run.t / 32, 0, 1);            // 첫 32초 동안 0 → 1
-  const ramp = 300 * warm + 210 * warm * warm;     // 선형 위주 + 약한 이차 = 부드러운 상승
-  const creep = Math.max(0, run.t - 32) * 3.0;     // 32초 이후 은근한 지속 압박
-  const stageAdj = run.stage * 36;                 // 스테이지 가산 (완화 — 계단 튐 줄임)
-  const target = (baseSpeed() + ramp + creep + stageAdj) * diffMod() * (P.boostT > 0 ? 1.5 : 1);
-  // 목표 속도 변화를 더 부드럽게 추종 (스테이지 상승·부스트 종료 시 '툭' 튀는 느낌 완화)
-  run.speed = lerp(run.speed, target, 1 - Math.pow(0.08, dt));
+  // 속도 완급 조절 (50~60대도 즐길 수 있게 전체 속도를 크게 낮춤):
+  // 시작은 여유롭고, 아주 천천히(50초에 걸쳐) 오르며, 후반에도 반응 가능한 상한 유지.
+  // 도둑을 여러 번 잡아 스테이지를 클리어할 수 있도록 급가속을 없앤다.
+  const warm = clamp(run.t / 50, 0, 1);            // 50초에 걸쳐 0 → 1 (아주 완만)
+  const ramp = 200 * warm;                          // 최대 +200 (완만한 선형 상승)
+  const creep = Math.max(0, run.t - 50) * 1.3;      // 50초 이후 아주 미세한 지속 상승
+  const stageAdj = run.stage * 24;                  // 스테이지당 소폭 (급가속 방지)
+  const target = (baseSpeed() + ramp + creep + stageAdj) * diffMod() * (P.boostT > 0 ? 1.4 : 1);
+  // 또렷하게 목표를 따라가 '스르르 미끄러지는' 느낌 제거 (목표 곡선 자체가 완만해 튐 없음)
+  run.speed = lerp(run.speed, target, 1 - Math.pow(0.02, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
   run.noHitDist += sp * dt / 10;
@@ -959,7 +961,7 @@ function updatePlay(dt0) {
       if (d < 220) { c.x += dx / d * 620 * dt; c.y += dy / d * 620 * dt; }
     }
     const d2 = Math.hypot(c.x - px, c.y - (P.y - 46));
-    if (d2 < 54) {
+    if (d2 < 60) {
       c.dead = true;
       run.coins += mult;
       run.combo++; run.comboT = 3;
@@ -975,7 +977,7 @@ function updatePlay(dt0) {
   for (const u of run.powerups) {
     u.x -= sp * dt;
     const d = Math.hypot(u.x - px, u.y - (P.y - 46));
-    if (d < 52) {
+    if (d < 64) {
       u.dead = true;
       Sound.sfx('power');
       vibrate(30);
@@ -1099,7 +1101,7 @@ function updatePlay(dt0) {
   // 도둑 (보스전 중에는 일반 도둑 미등장)
   if (run.thief) {
     const th = run.thief;
-    const factor = th.escaping ? 1.4 : 0.91;
+    const factor = th.escaping ? 1.4 : 0.885;   // 평소 더 빨리 따라잡히게 (0.91 → 0.885)
     th.dx += (factor - 1) * sp * dt;
     // 도둑 폴짝폴짝 (연출용)
     th.jumpT -= dt;
