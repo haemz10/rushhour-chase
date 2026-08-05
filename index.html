@@ -35,6 +35,12 @@
       navigator.serviceWorker.register('sw.js').catch(() => {});
     });
   }
+  // 아이폰 사파리 '왼쪽 가장자리 스와이프(뒤로가기)'로 게임이 종료되는 것 방지:
+  // 히스토리에 더미 상태를 넣어 뒤로가기가 페이지를 떠나지 못하게 가둔다.
+  try {
+    history.pushState(null, '', location.href);
+    window.addEventListener('popstate', () => history.pushState(null, '', location.href));
+  } catch (e) {}
 </script>
 </body>
 </html>

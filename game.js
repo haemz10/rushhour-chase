@@ -495,9 +495,26 @@ function coinJumpArc(x0, sp) {
   const n = clamp(Math.round(span / 58), 5, 9);
   for (let i = 0; i < n; i++) {
     const t = (i / (n - 1)) * air;
-    const feet = 900 * t - 1200 * t * t;   // 시점 t의 발 높이
+    const feet = 900 * t - 1200 * t * t;   // 시점 t의 발 높이 (vy=-900, g=2400)
     run.coinsArr.push({ x: x0 + t * sp, y: g - 46 - feet, ph: i });
   }
+}
+
+// 방금 놓인 코인이 장애물과 겹치면 제거 (장애물 위에 코인이 박히는 문제 방지)
+function removeCoinsOverlappingObstacles() {
+  const g = GY();
+  run.coinsArr = run.coinsArr.filter(c => {
+    for (const o of run.obstacles) {
+      if (o.type === 'pit') continue;                  // 구덩이는 바닥이라 무시
+      const half = o.w / 2 + 18;
+      let oTop, oBot;
+      if (o.type === 'pigeon' || o.type === 'drone') { oBot = g - o.yOff; oTop = oBot - o.h; }
+      else { oBot = g; oTop = g - o.h; }
+      // 코인(반지름 ~14)이 장애물 박스에 겹치면 탈락
+      if (c.x > o.x - half && c.x < o.x + half && c.y > oTop - 20 && c.y < oBot + 6) return false;
+    }
+    return true;
+  });
 }
 
 // 신규 장애물 다양화 — 기존 패턴과 독립된 확률로 가끔 등장 (스폰 1회당 하나)
@@ -605,6 +622,8 @@ function spawnPattern() {
     * (1 - Math.min(0.22, run.stage * 0.055));
   // 착지 안전 하한(sp*0.85): 점프 수평거리(sp*0.75)보다 뒤 — 아슬아슬하지만 착지 즉시 충돌은 불가
   run.spawnD = Math.max((rand(120, 290) + sp * 0.62) * gapMul, sp * 0.85);
+  // 이번 패턴에서 장애물과 겹친 코인 정리
+  removeCoinsOverlappingObstacles();
 }
 
 /* ---------------- 도둑 ---------------- */
@@ -651,6 +670,10 @@ function catchThief(method) {
     run.powerups.push({ type: drop, x: PX() + 260, y: GY() - 80, ph: 0 });
   } else {
     addFloat(W / 2, H * 0.32, T('gotItem', ITEM_ICONS[idx], L.items[idx], bonus), '#ffd166', 1.5);
+  }
+  // 2/3 회수 → "하나만 더 잡으면 레벨업!" 시점 안내 (레벨업 임박 표기)
+  if (run.items % 3 === 2) {
+    addFloat(W / 2, H * 0.32 + 46, T('oneMoreLevel'), '#7bffc8', 1.15);
   }
   run.caughtAnim = { x: tx, y: GY(), t: 0, method };
   run.thief = null;
@@ -809,15 +832,15 @@ function updatePlay(dt0) {
   run.t += dt;
   run.hintT = Math.max(0, run.hintT - dt0);
 
-  // 속도 완급 조절: 초반 ~20초는 반응 가능하게 여유롭게 시작하고,
-  // 이차 곡선(ease-in)으로 서서히 붙은 뒤, 20초 이후엔 은근한 압박을 지속한다.
-  // 스테이지가 오를수록(성공할수록) 기본 속도가 올라가고 숨겨진 DDA로 미세 보정.
-  const warm = clamp(run.t / 20, 0, 1);            // 첫 20초 동안 0 → 1
-  const ramp = 430 * warm * warm;                  // 시작은 완만, 후반부로 갈수록 가팔라짐
-  const creep = Math.max(0, run.t - 20) * 4.2;     // 20초 이후 지속되는 은근한 상승
-  const target = (baseSpeed() + ramp + creep + run.stage * 58) * diffMod() * (P.boostT > 0 ? 1.55 : 1);
-  // 속도 변화를 살짝 부드럽게 (급가속 체감 완화)
-  run.speed = lerp(run.speed, target, 1 - Math.pow(0.004, dt));
+  // 속도 완급 조절: 급격한 계단식 상승 없이 "부드럽고 연속적으로" 서서히 빨라진다.
+  // 첫 32초에 걸쳐 선형+약한 이차로 완만히 오르고, 이후엔 아주 은근한 지속 상승.
+  const warm = clamp(run.t / 32, 0, 1);            // 첫 32초 동안 0 → 1
+  const ramp = 300 * warm + 210 * warm * warm;     // 선형 위주 + 약한 이차 = 부드러운 상승
+  const creep = Math.max(0, run.t - 32) * 3.0;     // 32초 이후 은근한 지속 압박
+  const stageAdj = run.stage * 36;                 // 스테이지 가산 (완화 — 계단 튐 줄임)
+  const target = (baseSpeed() + ramp + creep + stageAdj) * diffMod() * (P.boostT > 0 ? 1.5 : 1);
+  // 목표 속도 변화를 더 부드럽게 추종 (스테이지 상승·부스트 종료 시 '툭' 튀는 느낌 완화)
+  run.speed = lerp(run.speed, target, 1 - Math.pow(0.08, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
   run.noHitDist += sp * dt / 10;
@@ -936,7 +959,7 @@ function updatePlay(dt0) {
       if (d < 220) { c.x += dx / d * 620 * dt; c.y += dy / d * 620 * dt; }
     }
     const d2 = Math.hypot(c.x - px, c.y - (P.y - 46));
-    if (d2 < 48) {
+    if (d2 < 54) {
       c.dead = true;
       run.coins += mult;
       run.combo++; run.comboT = 3;
