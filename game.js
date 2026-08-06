@@ -163,6 +163,13 @@ const Sound = {
     this.cur = el; this.curUrl = url;
     if (!save.muted) el.play().catch(() => {});
   },
+  // 내 음악(custom)도 게임 진행 화면에서만 재생 — 벗어나면 일시정지, 돌아오면 재개
+  syncBgm() {
+    if (save.bgmMode !== 'custom' || !this.cur || save.muted) return;
+    const playing = (state === 'play' || state === 'intro');
+    if (playing && this.cur.paused) this.cur.play().catch(() => {});
+    else if (!playing && !this.cur.paused) this.cur.pause();
+  },
   // 레벨(스테이지)이 바뀔 때마다 새 곡으로 교체
   nextTrack() {
     if (save.bgmMode !== 'custom') return;
@@ -247,9 +254,11 @@ const Sound = {
       const useCustom = (save.bgmMode === 'custom' && this.cur);
       while (this.nextNoteTime < this.ac.currentTime + 0.25) {
         if (useCustom) { this.nextNoteTime += (60 / 140 / 2); this.step++; continue; }
-        const i = this.step % 32;
+        // 게임 진행 화면(플레이/인트로)에서만 BGM 재생 — 그 외(메뉴·일시정지·상점·결과)는 무음
         const playing = (state === 'play' || state === 'intro');
-        const vol = playing ? 1 : 0.55;
+        if (!playing) { this.nextNoteTime += (60 / 140 / 2); this.step++; continue; }
+        const i = this.step % 32;
+        const vol = 1;
         const m = this.MELODY[i];
         if (m) this.tone(m, SPB * 0.9, 'square', 0.035 * vol, 0, this.nextNoteTime);
         const b = this.BASS[i];
@@ -1448,6 +1457,10 @@ function drawCityScape(kind, dist, T) {
   const near = lighten(T.mid, 0.05);
   const far = lighten(T.far, 0.05);
 
+  // 탑형 랜드마크는 배경(원경) 레이어로 먼저 그려, 근경 건물이 앞을 가리며 스카이라인에 녹아들게 한다.
+  // (시드니 하버브릿지는 낮은 원경 앞에 있어야 자연스러워, 아래에서 원경 뒤에 그린다)
+  if (kind !== 'sydney') bigLandmark(kind, dist, T);
+
   if (kind === 'paris') {
     tileRow(dist * 0.22, 122, (x, i, seed) => { const h = 88 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 114, h); });
     tileRow(dist * 0.4, 108, (x, i, seed) => {
@@ -1511,24 +1524,23 @@ function drawCityScape(kind, dist, T) {
     for (let k = 0; k < 7; k++) { const wx = ((k * 170 - (dist * 8) % 170) % (W + 170)) - 40; ctx.beginPath(); ctx.moveTo(wx, g - 8 + (k % 2) * 3); ctx.lineTo(wx + 70, g - 8 + (k % 2) * 3); ctx.stroke(); }
   }
 
-  bigLandmark(kind, dist, T);
-  if (kind === 'sydney') drawGulls(dist);
+  if (kind === 'sydney') { bigLandmark(kind, dist, T); drawGulls(dist); }
 }
 
-// 큰 랜드마크 — 도시별 상징 건물 (시드니는 하버브릿지+오페라하우스로 특별 처리)
+// 큰 랜드마크 — 뒤 건물들과 같은 속도(원경 패럴랙스)로 흐르고, 주기적으로 다시 등장한다.
+// 근경 건물들이 앞을 가리도록 drawCityScape 맨 앞에서 호출된다.
 function bigLandmark(kind, dist, T) {
   const g = GY();
-  const scroll = dist * 0.1;
-  const col = lighten(T.mid, 0.2);
+  const scroll = dist * 0.22;                    // 원경(뒤 건물) 레이어와 동일 속도
+  const col = lighten(T.far, 0.14);              // 뒤 건물보다 살짝 밝게, 근경보다 어둡게 → 배경에 녹아듦
   const light = T.neon[2] || '#ffd166', light2 = T.neon[0] || '#ff6fa5';
-  if (kind === 'sydney') { drawSydney(scroll, T, col, light); return; }
-
-  const period = W * 3.0;
-  const sx = W + 340 - ((((scroll + W * 0.5) % period) + period) % period);
-  if (sx < -360 || sx > W + 360) return;
+  const period = W * 3.4;
+  const sx = W + 380 - ((((scroll + W * 0.4) % period) + period) % period);
+  if (sx < -420 || sx > W + 420) return;
+  if (kind === 'sydney') { drawSydney(sx, T, col, light); return; }
   ctx.save();
   ctx.translate(sx, g - 22);
-  ctx.scale(1.55, 1.55);
+  ctx.scale(1.4, 1.4);
   ctx.fillStyle = col;
   const dot = (x, y, c, r) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r || 2, 0, TAU); ctx.fill(); ctx.fillStyle = col; };
 
@@ -1599,10 +1611,10 @@ function bigLandmark(kind, dist, T) {
 }
 
 // 시드니: 하버브릿지(큰 아치) + 오페라하우스(조개지붕)
-function drawSydney(scroll, T, col, light) {
+function drawSydney(sx, T, col, light) {
   const g = GY();
-  const cx = W * 0.5 + Math.sin(scroll * 0.0015) * 24;
-  const span = Math.min(W * 0.92, 640), bh = 120;
+  const cx = sx;                                 // 주기적으로 흐르는 위치 (배경과 함께 이동)
+  const span = Math.min(W * 0.86, 560), bh = 112;
   const lx = cx - span / 2, rx = cx + span / 2, deckY = g - 44;
   ctx.fillStyle = col;
   // 교각(파일런)
@@ -3043,6 +3055,7 @@ function frame(now) {
   let dt = Math.min(0.033, (now - lastTime) / 1000);
   lastTime = now;
   globalT += dt;
+  Sound.syncBgm();   // 진행 화면 밖이면 내 음악 일시정지
 
   ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
   uiButtons = [];
