@@ -1678,10 +1678,14 @@ function drawHeroine(x, y, opt) {
   const o = opt || {};
   if (o.blink && Math.floor(globalT * 12) % 2 === 0) ctx.globalAlpha = 0.35;
   ctx.save();
-  ctx.translate(x, y - (o.spin ? 40 : 0));   // 회전 중엔 발끝 기준을 몸 중앙으로
-  if (o.spin) ctx.rotate(o.spin);            // 빙판에서 팽이처럼 빙글빙글
-  else if (o.hurt) ctx.rotate(-0.18);
-  if (o.spin) ctx.translate(0, 40);
+  ctx.translate(x, y);
+  if (o.spin) {
+    // 다리를 축으로 제자리에서 빙글빙글 (팽이/피루엣) — 가로폭을 코사인으로 눌러
+    // 앞→옆→뒤로 돌아 보이게 한다. 발끝(원점)을 축으로 하므로 발은 그대로.
+    let sx = Math.cos(o.spin);
+    sx = sx >= 0 ? Math.max(0.16, sx) : Math.min(-0.16, sx);
+    ctx.scale(sx, 1);
+  } else if (o.hurt) ctx.rotate(-0.18);
   const ph = o.phase || 0;
   const runc = o.pose === 'run';
   const legA = runc ? Math.sin(ph) * 0.9 : (o.pose === 'jump' ? 0.5 : 0.1);
@@ -2396,7 +2400,7 @@ function drawPlayScene() {
     phase: run.dist * 0.12,
     punch: P.punchT > 0.06,
     hurt: P.hurtT > 0,
-    spin: P.spinT > 0 ? globalT * 16 : 0,
+    spin: P.spinT > 0 ? globalT * 9 : 0,
     blink: P.inv > 0 && P.boostT <= 0,
   });
 
@@ -2569,19 +2573,18 @@ function drawMenu() {
   }
   button(bx, by, bw, 52, T('btnShop'), () => { state = 'shop'; }, { color: '#4a55c9' });
   by += 64;
-  const bw3 = (bw - 16) / 3;
-  button(bx, by, bw3, 46, T('btnStory'), () => { startIntro(); }, { color: '#2a2d45', size: 15 });
-  button(bx + bw3 + 8, by, bw3, 46, (save.muted ? '🔇 ' : '🔊 ') + T('btnSound'), () => {
-    Sound.setMuted(!save.muted);
-  }, { color: '#2a2d45', size: 15 });
-  button(bx + (bw3 + 8) * 2, by, bw3, 46, '🌐 ' + (save.lang || detectLang()).toUpperCase(), () => {
-    state = 'lang';
-  }, { color: '#2a2d45', size: 15 });
-  // 배경음악 선택 (기본 레트로 / 내 음악)
-  by += 56;
-  button(bx, by, bw, 44, '🎵 ' + T(save.bgmMode === 'custom' ? 'bgmCustom' : 'bgmRetro'), () => {
+  // 설정 4버튼 한 줄 (스토리 · 사운드 · 배경음악 · 언어) — 항상 화면 안에 보이도록 통합
+  const bw4 = (bw - 24) / 4;
+  const gx = bw4 + 8;
+  button(bx, by, bw4, 46, '📖', () => { startIntro(); }, { color: '#2a2d45', size: 20 });
+  button(bx + gx, by, bw4, 46, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: '#2a2d45', size: 20 });
+  // 🎵 배경음악: 탭하면 기본↔내음악 전환. 내 음악 선택 시 초록색으로 표시(✓).
+  button(bx + gx * 2, by, bw4, 46, save.bgmMode === 'custom' ? '🎵✓' : '🎵', () => {
     Sound.setBgmMode(save.bgmMode === 'custom' ? 'retro' : 'custom');
-  }, { color: '#2a2d45', size: 15 });
+  }, { color: save.bgmMode === 'custom' ? '#3a7d44' : '#2a2d45', size: 18 });
+  button(bx + gx * 3, by, bw4, 46, '🌐' + (save.lang || detectLang()).toUpperCase(), () => {
+    state = 'lang';
+  }, { color: '#2a2d45', size: 13 });
 }
 
 /* ---------------- 언어 선택 ---------------- */
