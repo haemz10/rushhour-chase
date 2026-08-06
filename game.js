@@ -112,7 +112,11 @@ function fitFont(txt, maxW, size, weight) {
 
 /* ---------------- Sound (WebAudio 합성) ---------------- */
 const Sound = {
-  ac: null, musicTimer: null, nextNoteTime: 0, step: 0, bgmEl: null,
+  ac: null, musicTimer: null, nextNoteTime: 0, step: 0,
+  // 내 음악(custom) 후보 파일들 — 있는 것만 자동으로 골라 레벨마다 랜덤 재생.
+  // (bgm1.mp3 ~ bgm8.mp3 중 올린 것 + 단일 bgm.mp3 도 지원)
+  trackUrls: ['bgm1.mp3', 'bgm2.mp3', 'bgm3.mp3', 'bgm4.mp3', 'bgm5.mp3', 'bgm6.mp3', 'bgm7.mp3', 'bgm8.mp3', 'bgm.mp3'],
+  candidates: null, cur: null, curUrl: null,
   init() {
     if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); this.applyBgm(); return; }
     try {
@@ -121,38 +125,58 @@ const Sound = {
       this.applyBgm();
     } catch (e) {}
   },
-  // 앱이 백그라운드로 가거나 화면이 꺼질 때 모든 소리를 멈춘다.
   suspend() {
     try { if (this.ac && this.ac.state === 'running') this.ac.suspend(); } catch (e) {}
-    if (this.bgmEl) { try { this.bgmEl.pause(); } catch (e) {} }
+    if (this.cur) { try { this.cur.pause(); } catch (e) {} }
   },
-  // 다시 돌아왔을 때 소리를 되살린다.
   resume() {
     try { if (this.ac && this.ac.state === 'suspended') this.ac.resume(); } catch (e) {}
-    if (!save.muted && save.bgmMode === 'custom' && this.bgmEl) { this.bgmEl.play().catch(() => {}); }
+    if (!save.muted && save.bgmMode === 'custom' && this.cur) { this.cur.play().catch(() => {}); }
   },
   setMuted(m) {
     save.muted = m; persist();
-    if (m) { if (this.bgmEl) { try { this.bgmEl.pause(); } catch (e) {} } }
+    if (m) { if (this.cur) { try { this.cur.pause(); } catch (e) {} } }
     else { this.init(); this.applyBgm(); }
   },
-  setBgmMode(mode) { save.bgmMode = mode; persist(); this.applyBgm(); },
-  // 내 음악(bgm.mp3) 재생 / 파일 없거나 실패 시 기본 레트로 BGM으로 자동 폴백
+  setBgmMode(mode) {
+    save.bgmMode = mode; persist();
+    if (mode !== 'custom' && this.cur) { try { this.cur.pause(); } catch (e) {} this.cur = null; this.curUrl = null; }
+    this.applyBgm();
+  },
+  // 직전 곡과 다른 곡을 우선 선택 (연속 반복 방지)
+  pickTrack() {
+    const others = this.candidates.filter(u => u !== this.curUrl);
+    const pool = others.length ? others : this.candidates;
+    return pool[Math.floor(Math.random() * pool.length)];
+  },
+  playCustom(url) {
+    if (this.cur) { try { this.cur.pause(); } catch (e) {} }
+    let el;
+    try { el = new Audio(url); } catch (e) { save.bgmMode = 'retro'; return; }
+    el.loop = true; el.volume = 0.5;
+    el.addEventListener('error', () => {           // 이 파일 없음 → 후보에서 빼고 다른 곡, 다 없으면 레트로
+      this.candidates = (this.candidates || []).filter(u => u !== url);
+      if (this.cur === el) this.cur = null;
+      if (this.candidates.length) this.playCustom(this.pickTrack());
+      else { save.bgmMode = 'retro'; persist(); }
+    });
+    this.cur = el; this.curUrl = url;
+    if (!save.muted) el.play().catch(() => {});
+  },
+  // 레벨(스테이지)이 바뀔 때마다 새 곡으로 교체
+  nextTrack() {
+    if (save.bgmMode !== 'custom') return;
+    if (!this.candidates) this.candidates = this.trackUrls.slice();
+    if (this.candidates.length) this.playCustom(this.pickTrack());
+  },
   applyBgm() {
     if (save.bgmMode === 'custom') {
-      if (!this.bgmEl) {
-        try {
-          this.bgmEl = new Audio('bgm.mp3');
-          this.bgmEl.loop = true; this.bgmEl.volume = 0.5;
-          this.bgmEl.addEventListener('error', () => {
-            save.bgmMode = 'retro'; persist();
-            if (this.bgmEl) { try { this.bgmEl.pause(); } catch (e) {} this.bgmEl = null; }
-          });
-        } catch (e) { save.bgmMode = 'retro'; return; }
-      }
-      if (!save.muted) this.bgmEl.play().catch(() => {});
-    } else if (this.bgmEl) {
-      try { this.bgmEl.pause(); } catch (e) {}
+      if (!this.candidates) this.candidates = this.trackUrls.slice();
+      if (!this.candidates.length) { save.bgmMode = 'retro'; return; }
+      if (!this.cur) this.playCustom(this.pickTrack());
+      else if (!save.muted) this.cur.play().catch(() => {});
+    } else if (this.cur) {
+      try { this.cur.pause(); } catch (e) {}
     }
   },
   tone(freq, dur, type, vol, slide, when) {
@@ -220,7 +244,7 @@ const Sound = {
     this.musicTimer = setInterval(() => {
       if (!this.ac || save.muted) return;
       // 내 음악(custom) 모드일 땐 합성 BGM은 재생하지 않는다 (효과음은 그대로).
-      const useCustom = (save.bgmMode === 'custom' && this.bgmEl);
+      const useCustom = (save.bgmMode === 'custom' && this.cur);
       while (this.nextNoteTime < this.ac.currentTime + 0.25) {
         if (useCustom) { this.nextNoteTime += (60 / 140 / 2); this.step++; continue; }
         const i = this.step % 32;
@@ -310,6 +334,7 @@ function startGame() {
     spinT: 0, slide: 0,               // 빙판: 빙글빙글 도는 시간 / 앞으로 밀리는 오프셋
     hearts: maxHearts, maxHearts,
   };
+  Sound.nextTrack();   // 판 시작 시 내 음악(custom) 랜덤 선곡
   state = 'play';
 }
 
@@ -806,6 +831,7 @@ function catchThief(method) {
     run.stageUpStage = run.stage + 1;   // 표시용(1-based)
     run.stageUpTheme = run.theme;
     run.policeSpawned = false;          // 다음 스테이지에서 경찰 아이템 다시 등장 가능
+    Sound.nextTrack();                  // 레벨마다 내 음악(custom) 랜덤 교체
     run.slowmo = Math.max(run.slowmo, 0.9);
     addFloat(W / 2, H * 0.45 + 44, T('stageClear2'), '#ffffff', 1.0);
     // 스테이지 3, 6, 9… 클리어 직후엔 도둑 두목이 직접 나선다!
