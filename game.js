@@ -294,6 +294,8 @@ function startGame() {
     missionReward: 0, streakBonus: 0,
     boss: null, bossPending: 0, projectiles: [], // 보스전
     playerShots: [],                             // 원거리 무기(거미줄/새총/불꽃) 발사체
+    speedBurst: 0, dodgeStreak: 0,               // 레벨업 순간 가속 / 방구 연속 회피 카운트
+    policeSpawned: false, policeReady: false,    // 경찰 사이렌: 스테이지당 1회 등장 / 보관된 찬스
     stageUpT: 0, stageUpStage: 0, stageUpTheme: 0, // 스테이지 승급 연출
     smashes: 0, nearMisses: 0, feverCount: 0,    // 미션 추적
     goldCatches: 0, bossKills: 0,
@@ -305,7 +307,7 @@ function startGame() {
     punchT: 0, inv: 0, hurtT: 0,
     shieldT: 0, magnetT: 0, boostT: 0,
     weapon: null, weaponCharges: 0,   // 원거리 무기 장착 상태
-    iceT: 0, slide: 0,                // 빙판: 미끄러짐 지속시간 / 앞으로 밀리는 오프셋
+    spinT: 0, slide: 0,               // 빙판: 빙글빙글 도는 시간 / 앞으로 밀리는 오프셋
     hearts: maxHearts, maxHearts,
   };
   state = 'play';
@@ -467,7 +469,7 @@ function endGame() {
 
 /* ---------------- 입력 ---------------- */
 function doJump() {
-  if (P.iceT > 0) return;   // 빙판에서 미끄러지는 동안엔 잠시 점프 불가
+  if (P.spinT > 0) return;   // 빙판에서 빙글빙글 도는 동안엔 아무 행동 불가
   if (P.ground) {
     P.vy = -900; P.ground = false; P.jumps = 1;
     Sound.sfx('jump');
@@ -480,6 +482,7 @@ function doJump() {
   }
 }
 function doPunch() {
+  if (P.spinT > 0) return;   // 빙판에서 도는 동안엔 공격도 불가
   if (P.punchT <= 0) {
     P.punchT = 0.22;
     Sound.sfx('punch');
@@ -648,8 +651,8 @@ function trySpawnVariety(x, g, sp, hard, adv) {
     O.push({ type: 'drone', x, w: 52, h: 34, yOff: rand(150, 188), ph: rand(0, TAU) });
     for (let i = 0; i < 4; i++) C.push({ x: x - 30 + i * 40, y: g - 44, ph: i });
   } else if (type === 'ice') {
-    // 바닥 빙판: 밟으면 앞으로 미끄러지고 잠시 점프 불가 (점프로 뛰어넘어 회피)
-    O.push({ type: 'ice', x, w: rand(88, 120), h: 0 });
+    // 바닥 빙판: 넓어서 한 번에 뛰어넘기 어렵다 — 밟으면 빙글빙글 회전
+    O.push({ type: 'ice', x, w: rand(140, 220), h: 0 });
   }
   return true;
 }
@@ -706,8 +709,8 @@ function spawnPattern() {
     // 낮은 코인 줄
     for (let i = 0; i < 6; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
   } else {
-    // 파워업 (고전 중이면 하트 확률을 몰래 올려준다 — DDA)
-    const heartBias = (save.skill < 0 || P.hearts <= 1) ? 0.30 : 0.10;
+    // 파워업 (하트는 체력 부족할 때만 조금 더, 넉넉하면 거의 안 나오게 — 더 랜덤하게)
+    const heartBias = P.hearts <= 1 ? 0.22 : (P.hearts >= 4 ? 0.03 : 0.08);
     let type;
     if (adv && Math.random() < 0.5) {
       // 원거리 무기: 거미줄 / 새총 / 불꽃 (스테이지1+ 에서만)
@@ -767,11 +770,11 @@ function catchThief(method) {
   Sound.sfx(golden ? 'gold' : method === 'fire' ? 'throw' : 'catch');
   vibrate(golden ? 120 : 60);
   const tx = PX() + run.thief.dx;
-  const catchCol = method === 'fire' ? '#ff8a3c' : method === 'web' ? '#dfe7ff' : '#ffd166';
+  const catchCol = method === 'fire' ? '#ff8a3c' : method === 'web' ? '#dfe7ff' : method === 'police' ? '#5ad1ff' : '#ffd166';
   burst(tx, GY() - 60, golden ? 40 : 26, catchCol, 4, true);
   burst(tx, GY() - 60, 14, golden ? '#fff1c4' : method === 'fire' ? '#ffb24a' : '#ff8fb3', 3, true);
   // 무기별 짤막한 한 방 문구
-  if (method !== 'punch') addFloat(tx, GY() - 150, T(method === 'web' ? 'fxWeb' : method === 'sling' ? 'fxSling' : 'fxFire'), catchCol, 1.1);
+  if (method === 'web' || method === 'sling' || method === 'fire') addFloat(tx, GY() - 150, T(method === 'web' ? 'fxWeb' : method === 'sling' ? 'fxSling' : 'fxFire'), catchCol, 1.1);
   if (golden) {
     run.goldCatches++;
     addFloat(W / 2, H * 0.32, T('goldCatch', bonus), '#ffe066', 1.6);
@@ -793,14 +796,16 @@ function catchThief(method) {
     // 세 가지 모두 회수 → 스테이지 클리어 (성공은 곧 난이도 상승)
     run.stage++;
     run.theme = (run.theme + 1) % THEMES.length;
-    P.hearts = Math.min(9, P.hearts + 1);   // 스테이지 클리어 보상 하트 (축적 가능)
+    P.hearts = Math.min(5, P.hearts + 1);   // 스테이지 클리어 보상 하트 (최대 5칸)
     run.coins += 300;
     save.skill = Math.min(6, save.skill + 1);
     Sound.sfx('clear');
-    // 레벨업(다음 구역 진입) 시각 연출 트리거
+    // 레벨업(다음 구역 진입) 시각 연출 트리거 + 잠깐의 가속(곧 가라앉음)
     run.stageUpT = 2.4;
+    run.speedBurst = 120;
     run.stageUpStage = run.stage + 1;   // 표시용(1-based)
     run.stageUpTheme = run.theme;
+    run.policeSpawned = false;          // 다음 스테이지에서 경찰 아이템 다시 등장 가능
     run.slowmo = Math.max(run.slowmo, 0.9);
     addFloat(W / 2, H * 0.45 + 44, T('stageClear2'), '#ffffff', 1.0);
     // 스테이지 3, 6, 9… 클리어 직후엔 도둑 두목이 직접 나선다!
@@ -812,7 +817,7 @@ function catchThief(method) {
 function spawnBoss() {
   run.boss = {
     dx: clamp(W * 0.72, 380, 480), y: GY(), vy: 0,
-    hp: 6 + Math.min(4, Math.floor(run.stage / 3)),  // 6방 → 최대 10방 (훨씬 단단해짐)
+    hp: 4 + Math.min(2, Math.floor(run.stage / 3)),  // 4방 → 최대 6방
     throwT: 1.4, jumpT: 1.1, staggerT: 0, hurtCount: 0, escaping: false,
   };
   run.boss.maxHp = run.boss.hp;
@@ -851,6 +856,22 @@ function bossEscape() {
   addFloat(W * 0.6, GY() - 240, T('bossTaunt'), '#ff8fb3', 1.2);
 }
 
+// 방구를 3연속 피하면 두목이 돌부리에 걸려 스스로 넘어진다 (자기 체력 -1)
+function bossTrip() {
+  const b = run.boss;
+  if (!b) return;
+  b.hp--;
+  b.staggerT = 1.0;
+  b.tripT = 1.0;
+  run.slowmo = 0.4; run.shake = 0.45;
+  Sound.sfx('bossHit');
+  vibrate(90);
+  const bx = PX() + b.dx;
+  burst(bx, GY() - 60, 22, '#b6d97a', 4, true);
+  addFloat(bx, GY() - 185, T('bossTrip'), '#7bffc8', 1.45);
+  if (b.hp <= 0) bossDefeated();
+}
+
 // 원거리 무기로 보스에게 한 방 (근접 펀치와 동일한 대미지)
 function weaponHitBoss(kind) {
   const b = run.boss;
@@ -877,7 +898,8 @@ function weaponHitBoss(kind) {
 function spawnBossPattern() {
   const x = W + 140, g = GY(), C = run.coinsArr;
   for (let i = 0; i < 5; i++) C.push({ x: x + i * 46, y: g - 42, ph: i });
-  if (Math.random() < 0.14) run.powerups.push({ type: 'heart', x: x + 280, y: g - 90, ph: 0 });
+  // 하트는 드물게 + 체력 부족할 때만 (두목 근처 하트 남발 방지)
+  if (P.hearts < 3 && Math.random() < 0.05) run.powerups.push({ type: 'heart', x: x + 280, y: g - 90, ph: 0 });
   run.spawnD = rand(500, 800) + run.speed * 0.4;
 }
 
@@ -885,6 +907,12 @@ function thiefEscape() {
   run.thief.escaping = true;
   Sound.sfx('escape');
   addFloat(W * 0.6, GY() - 220, T('escapeTaunt'), '#ff8fb3', 1.1);
+  // 레벨이 높아 도둑이 잡힐 듯 말 듯 놓쳤을 때만 '경찰 사이렌' 구원 아이템이 등장한다.
+  if (run.stage >= 3 && !run.policeSpawned && Math.random() < 0.6) {
+    run.policeSpawned = true;   // 판당 남발 방지 (다음 스테이지에서 리셋)
+    run.powerups.push({ type: 'police', x: W + 120, y: GY() - 100 - rand(0, 26), ph: rand(0, TAU) });
+    addFloat(W * 0.5, GY() - 250, T('policeChance'), '#5ad1ff', 1.2);
+  }
 }
 
 /* ---------------- 피격/획득 ---------------- */
@@ -941,16 +969,17 @@ function updatePlay(dt0) {
   run.t += dt;
   run.hintT = Math.max(0, run.hintT - dt0);
 
-  // 속도 완급 조절 (50~60대도 즐길 수 있게 전체 속도를 크게 낮춤):
-  // 시작은 여유롭고, 아주 천천히(50초에 걸쳐) 오르며, 후반에도 반응 가능한 상한 유지.
-  // 도둑을 여러 번 잡아 스테이지를 클리어할 수 있도록 급가속을 없앤다.
-  const warm = clamp(run.t / 50, 0, 1);            // 50초에 걸쳐 0 → 1 (아주 완만)
-  const ramp = 200 * warm;                          // 최대 +200 (완만한 선형 상승)
-  const creep = Math.max(0, run.t - 50) * 1.3;      // 50초 이후 아주 미세한 지속 상승
-  const stageAdj = run.stage * 24;                  // 스테이지당 소폭 (급가속 방지)
-  const target = (baseSpeed() + ramp + creep + stageAdj) * diffMod() * (P.boostT > 0 ? 1.4 : 1);
-  // 또렷하게 목표를 따라가 '스르르 미끄러지는' 느낌 제거 (목표 곡선 자체가 완만해 튐 없음)
-  run.speed = lerp(run.speed, target, 1 - Math.pow(0.02, dt));
+  // 속도 완급 조절 — "쉬어가는 리듬": 시작은 살짝 빠르게, 완만히 오르되
+  // 느긋↔긴장 파도(약 15초 주기)로 중간중간 숨 돌릴 구간을 넣고,
+  // 레벨업 순간엔 잠깐 빨라졌다가 다시 가라앉는다.
+  run.speedBurst = Math.max(0, run.speedBurst - 42 * dt);
+  const warm = clamp(run.t / 48, 0, 1);
+  const ramp = 55 + 175 * warm;                     // 시작 +55 (살짝 빠르게), 최대 +230
+  const wave = Math.sin(run.t / 15 * TAU) * 52;     // 쉬어가는/조여드는 리듬
+  const stageAdj = run.stage * 22;
+  const target = (baseSpeed() + ramp + wave + run.speedBurst + stageAdj) * diffMod() * (P.boostT > 0 ? 1.4 : 1);
+  // 또렷하게 목표를 따라가 미끄러짐 없이, 리듬 변화는 부드럽게 체감
+  run.speed = lerp(run.speed, target, 1 - Math.pow(0.035, dt));
   const sp = run.speed;
   run.dist += sp * dt / 10;
   run.noHitDist += sp * dt / 10;
@@ -988,9 +1017,9 @@ function updatePlay(dt0) {
   P.shieldT = Math.max(0, P.shieldT - dt);
   P.magnetT = Math.max(0, P.magnetT - dt);
   P.boostT = Math.max(0, P.boostT - dt);
-  // 빙판: 미끄러짐 타이머 감소, 빙판을 벗어나면 앞으로 밀린 위치가 서서히 원위치로
-  P.iceT = Math.max(0, P.iceT - dt0);
-  if (P.iceT <= 0) P.slide = Math.max(0, P.slide - 100 * dt0);
+  // 빙판: 회전(행동불가) 타이머 감소, 끝나면 앞으로 밀린 위치가 서서히 원위치로
+  P.spinT = Math.max(0, P.spinT - dt0);
+  if (P.spinT <= 0) P.slide = Math.max(0, P.slide - 90 * dt0);
   run.comboT -= dt;
   if (run.comboT <= 0) run.combo = Math.max(0, run.combo - Math.ceil(run.combo * dt * 2));
 
@@ -1010,11 +1039,12 @@ function updatePlay(dt0) {
     if (o.dead) continue;
     const oL = o.x - o.w / 2, oR = o.x + o.w / 2;
 
-    // 빙판: 지상에서 밟으면 앞으로 스르르 미끄러지고 잠시 점프 불가 (피해는 없음)
+    // 빙판: 밟으면 빙글빙글 돌며 앞으로 미끄러진다. 도는 동안 행동 불가(공격·점프·회피 X).
+    // 앞으로 밀려 코인을 쓸어담거나 도둑에 가까워지는 이득 ↔ 그동안 무방비인 위험 (아이러니)
     if (o.type === 'ice') {
       if (P.ground && px + 15 > oL && px - 15 < oR) {
-        P.iceT = 0.5;
-        P.slide = Math.min(52, P.slide + 150 * dt);
+        P.spinT = Math.min(1.4, Math.max(P.spinT, 1.05));   // 최소 1초 이상 회전
+        P.slide = Math.min(80, P.slide + 190 * dt);
         if (!o.slipSfx) { Sound.sfx('near'); o.slipSfx = true; }
       }
       continue;
@@ -1106,13 +1136,22 @@ function updatePlay(dt0) {
       if (u.type === 'shield') { P.shieldT = 8 + save.up.shield * 2; addFloat(px, P.y - 120, T('puShield'), '#9fd8ff', 1.1); }
       if (u.type === 'boost')  { P.boostT = 2.6; run.shake = 0.2; addFloat(px, P.y - 120, T('puBoost'), '#ffd166', 1.2); }
       if (u.type === 'heart')  {
-        // 하트는 축적 가능 — 이미 가득해도 코인 전환 없이 하나 더 쌓인다 (최대 9칸)
-        P.hearts = Math.min(9, P.hearts + 1);
+        // 하트는 축적 가능 — 이미 가득해도 코인 전환 없이 하나 더 쌓인다 (최대 5칸)
+        P.hearts = Math.min(5, P.hearts + 1);
         addFloat(px, P.y - 120, T('puHeal'), '#ff8fb3', 1.1);
       }
       if (u.type === 'web' || u.type === 'sling' || u.type === 'fire') {
         P.weapon = u.type; P.weaponCharges = 1;   // 1발만 — 한 방을 신중하게 (너무 쉬워지지 않게)
         addFloat(px, P.y - 122, T(u.type === 'web' ? 'puWeb' : u.type === 'sling' ? 'puSling' : 'puFire'), '#dfe7ff', 1.15);
+      }
+      if (u.type === 'police') {
+        // 경찰 출동! 보스전이면 두목 체력 -1, 아니면 (도망친) 도둑을 대신 잡아준다.
+        run.policeFlash = 1.3;
+        Sound.sfx('gold'); vibrate(70);
+        addFloat(px, P.y - 128, T('policeGo'), '#5ad1ff', 1.3);
+        if (run.boss && !run.boss.escaping) weaponHitBoss('police');
+        else if (run.thief) catchThief('police');
+        else run.policeReady = true;   // 지금 대상이 없으면 다음 도둑/두목에게 사용
       }
       burst(u.x, u.y, 12, '#ffffff', 3, true);
     }
@@ -1129,25 +1168,35 @@ function updatePlay(dt0) {
   if (run.boss) {
     const b = run.boss;
     b.staggerT = Math.max(0, b.staggerT - dt);
+    b.tripT = Math.max(0, (b.tripT || 0) - dt);
+    // 보관된 경찰 찬스 → 두목 체력 -1
+    if (run.policeReady && !b.escaping) { run.policeReady = false; weaponHitBoss('police'); if (state !== 'play') return; }
     const factor = b.escaping ? 1.45 : (b.staggerT > 0 ? 1.0 : 0.90);
     b.dx += (factor - 1) * sp * dt;
+    // 안전장치: 두목이 플레이어 뒤로 빠져 게임이 멈추는 소프트락 방지 (앞에서 대기)
+    if (!b.escaping) b.dx = Math.max(70, b.dx);
     b.jumpT -= dt;
     b.vy += 2600 * dt;
     b.y += b.vy * dt;
     if (b.y >= g) { b.y = g; b.vy = 0; if (b.jumpT <= 0 && !b.escaping) { b.vy = -rand(380, 560); b.jumpT = rand(0.9, 1.7); } }
-    // 반격 투척 — 더 자주, 더 빠르게, 후반엔 2연발 (회색 방구공에 맞으면 피해!)
+    // 방구 발사 — 일직선(점프로 피함) 또는 높이(가만히 있어야 피함) 랜덤. "뿡/흥/칫" 텍스트 동반.
     if (!b.escaping && b.staggerT <= 0 && b.dx < W * 0.9) {
       b.throwT -= dt;
       if (b.throwT <= 0) {
-        b.throwT = rand(1.0, 1.7) - Math.min(0.7, run.stage * 0.06);
-        const shoot = (a) => run.projectiles.push({
-          x: px + b.dx - 24, y: b.y - 62,
-          vx: -(sp * 0.45 + rand(220, 320)), vy: rand(-470, -260) + a,
-          spin: rand(0, TAU), t: 0,
-        });
-        shoot(0);
-        if (run.stage >= 3 && Math.random() < 0.45) shoot(140); // 2연발
+        b.throwT = rand(1.1, 1.8) - Math.min(0.5, run.stage * 0.05);
+        const words = ['뿡!', '흥!', '칫!'];
+        const shoot = () => {
+          const high = Math.random() < 0.5;             // true=머리 위(가만히), false=몸통(점프)
+          run.projectiles.push({
+            x: px + b.dx - 24, y: high ? g - 150 : g - 44,
+            vx: -(sp * 0.45 + rand(200, 300)), vy: 0, high,
+            word: words[Math.floor(rand(0, 3))], puff: rand(0, TAU), t: 0, passed: false,
+          });
+        };
+        shoot();
+        if (run.stage >= 3 && Math.random() < 0.4) shoot(); // 후반 2연발
         Sound.sfx('throw');
+        addFloat(px + b.dx - 30, b.y - 96, ['뿡~💨', '흥!💨', '칫!💨'][Math.floor(rand(0, 3))], '#b6d97a', 1.1);
       }
     }
     // 펀치 타격
@@ -1174,28 +1223,37 @@ function updatePlay(dt0) {
     }
   }
 
-  // 보스 투척물
+  // 보스 방구 발사물 (일직선/높이 이동, 중력 없음)
   for (const pj of run.projectiles) {
     pj.t += dt;
+    pj.puff += dt * 6;
     pj.x += (pj.vx - sp * 0.25) * dt;
-    pj.y += pj.vy * dt;
-    pj.vy += 1500 * dt;
-    // 펀치로 격추
-    if (P.punchT > 0.1 && pj.x > px + 10 && pj.x < px + 105 && pj.y > P.y - 150 && pj.y < P.y + 5) {
+    // 펀치로 격추 (앞쪽에서 펀치하면 흩어짐)
+    if (P.punchT > 0.1 && pj.x > px + 10 && pj.x < px + 105 && pj.y > P.y - 160 && pj.y < P.y + 5) {
       pj.dead = true;
       run.coins += 5;
       Sound.sfx('smash');
-      burst(pj.x, pj.y, 10, '#8fe3ff', 3, true);
+      burst(pj.x, pj.y, 10, '#b6d97a', 3, true);
       addFloat(pj.x, pj.y - 20, '+5', '#ffd166', 0.8);
       continue;
     }
     // 피격
-    if (Math.hypot(pj.x - px, pj.y - (P.y - 46)) < 38) {
+    if (Math.hypot(pj.x - px, pj.y - (P.y - 46)) < 34) {
       pj.dead = true;
+      run.dodgeStreak = 0;         // 맞으면 연속 회피 초기화
       hurt(null);
       if (state !== 'play') return;
     }
-    if (pj.y > g + 10) { pj.dead = true; burst(pj.x, g, 6, '#9aa2b8', 3); }
+    // 무사히 지나가면 연속 회피 카운트 → 3번이면 두목이 돌부리에 걸려 자빠진다
+    if (!pj.passed && pj.x < px - 34) {
+      pj.passed = true;
+      run.dodgeStreak++;
+      if (run.dodgeStreak >= 3 && run.boss && !run.boss.escaping) {
+        run.dodgeStreak = 0;
+        bossTrip();
+        if (state !== 'play') return;
+      }
+    }
   }
   run.projectiles = run.projectiles.filter(p => !p.dead && p.x > -80);
 
@@ -1228,6 +1286,8 @@ function updatePlay(dt0) {
     const th = run.thief;
     const factor = th.escaping ? 1.4 : 0.885;   // 평소 더 빨리 따라잡히게 (0.91 → 0.885)
     th.dx += (factor - 1) * sp * dt;
+    // 안전장치: 추격 중 도둑이 플레이어 뒤로 빠져 사라지는 소프트락 방지 (앞에서 대기)
+    if (!th.escaping) th.dx = Math.max(52, th.dx);
     // 도둑 폴짝폴짝 (연출용)
     th.jumpT -= dt;
     th.vy += 2600 * dt;
@@ -1248,8 +1308,10 @@ function updatePlay(dt0) {
       run.thief = null;
       run.thiefTimer = rand(7, 11);
     }
-    // 잡기! (근접 펀치)
-    if (!th.escaping && P.punchT > 0.1 && th.dx < 115) {
+    // 보관된 경찰 찬스가 있으면 이 도둑을 대신 잡아준다
+    if (run.policeReady) { run.policeReady = false; catchThief('police'); }
+    // 잡기! (근접 펀치) — 빙판에 밀려 앞으로 나간 만큼(slide) 손이 더 닿는다
+    else if (!th.escaping && P.punchT > 0.1 && th.dx - P.slide < 115) {
       catchThief('punch');
     }
   } else if (!run.boss && run.bossPending <= 0) {
@@ -1257,8 +1319,9 @@ function updatePlay(dt0) {
     if (run.thiefTimer <= 0) spawnThief();
   }
 
-  // 스테이지 승급 연출 타이머
+  // 스테이지 승급 연출 타이머 / 경찰 사이렌 번쩍임
   run.stageUpT = Math.max(0, run.stageUpT - dt0);
+  run.policeFlash = Math.max(0, (run.policeFlash || 0) - dt0);
 
   // 잡힌 도둑 연출
   if (run.caughtAnim) {
@@ -1311,12 +1374,8 @@ function drawBackground(theme, dist, dim) {
   ctx.fillStyle = T.sky1;
   ctx.beginPath(); ctx.arc(W * 0.82 + 10, H * 0.14 - 6, 22, 0, TAU); ctx.fill();
 
-  // 원경 스카이라인 (패럴랙스 0.15)
-  drawSkyline(dist * 0.15, g - 150, 130, T.far, 97, false);
-  // 중경 건물 + 네온 (패럴랙스 0.4)
-  drawSkyline(dist * 0.4, g - 60, 190, T.mid, 53, true, T.neon);
-  // 도시 상징 건물 — 건물들 앞에 또렷하게 (낮은 랜드마크도 가려지지 않도록)
-  drawLandmark(landmarkForTheme(theme), dist, T);
+  // 선택 언어의 대표 도시로 배경 전체를 구성 (연속적인 도시 풍경 + 큰 랜드마크)
+  drawCityScape(landmarkForTheme(theme), dist, T);
 
   // 지면
   ctx.fillStyle = '#101226';
@@ -1336,86 +1395,224 @@ function drawBackground(theme, dist, dim) {
   if (dim) { ctx.fillStyle = `rgba(4,5,16,${dim})`; ctx.fillRect(0, 0, W, H); }
 }
 
-// 도시 상징 건물 — 느리게 흘러가며 한 번에 하나만 보인다 (지나가며 스치는 랜드마크)
-function drawLandmark(kind, dist, T) {
+/* ===== 도시 배경: 언어별 대표 도시를 가로로 연속되게 구성 ===== */
+// 창문 격자
+function winGrid(x, bottomY, topY, w, cols, seed, wc) {
+  const rows = Math.max(2, Math.floor((bottomY - topY) / 30));
+  const cw = w / cols;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const on = ((seed * 7 + r * 13 + c * 5) % 4) < 3;
+    ctx.fillStyle = on ? (wc || 'rgba(255,225,150,0.5)') : 'rgba(255,225,150,0.12)';
+    ctx.fillRect(x + c * cw + cw * 0.22, topY + 10 + r * 28, cw * 0.5, 15);
+  }
+}
+// 건물 줄을 가로로 무한 타일링 (패럴랙스 scroll)
+function tileRow(scroll, tileW, fn) {
+  const start = Math.floor(scroll / tileW);
+  const n = Math.ceil(W / tileW) + 2;
+  for (let i = start; i < start + n; i++) {
+    const x = i * tileW - scroll;
+    const seed = ((i * 73) % 100 + 100) % 100;
+    fn(x, i, seed);
+  }
+}
+
+function drawCityScape(kind, dist, T) {
+  const g = GY();
+  const near = lighten(T.mid, 0.05);
+  const far = lighten(T.far, 0.05);
+
+  if (kind === 'paris') {
+    tileRow(dist * 0.22, 122, (x, i, seed) => { const h = 88 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 114, h); });
+    tileRow(dist * 0.4, 108, (x, i, seed) => {
+      const bh = 148 + (seed % 2) * 16;
+      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 100, bh);
+      ctx.fillStyle = far;                     // 만사르 지붕
+      ctx.beginPath(); ctx.moveTo(x - 4, g - bh); ctx.lineTo(x + 104, g - bh); ctx.lineTo(x + 94, g - bh - 24); ctx.lineTo(x + 6, g - bh - 24); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,225,150,0.45)';
+      for (let k = 0; k < 3; k++) ctx.fillRect(x + 22 + k * 26, g - bh - 19, 8, 9);
+      winGrid(x + 8, g - 16, g - bh + 14, 84, 3, seed);
+      ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 2;
+      for (let r = 1; r < 4; r++) { const yy = g - bh + 14 + r * 32; ctx.beginPath(); ctx.moveTo(x + 10, yy); ctx.lineTo(x + 90, yy); ctx.stroke(); }
+      ctx.fillStyle = far; ctx.fillRect(x + 72, g - bh - 40, 6, 16); ctx.fillRect(x + 82, g - bh - 44, 6, 20);
+    });
+  } else if (kind === 'nyc' || kind === 'shanghai' || kind === 'tokyo') {
+    tileRow(dist * 0.22, 90, (x, i, seed) => { const h = 110 + (seed % 4) * 44; ctx.fillStyle = far; ctx.fillRect(x, g - h, 84, h); });
+    tileRow(dist * 0.4, 98, (x, i, seed) => {
+      const bh = 150 + (seed % 5) * 46;
+      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 90, bh);
+      if (kind === 'nyc' && seed % 3 === 0) { ctx.fillStyle = far; ctx.fillRect(x + 22, g - bh - 22, 20, 22); ctx.beginPath(); ctx.moveTo(x + 20, g - bh - 22); ctx.lineTo(x + 44, g - bh - 22); ctx.lineTo(x + 32, g - bh - 34); ctx.closePath(); ctx.fill(); }
+      winGrid(x + 6, g - 16, g - bh + 12, 78, 4, seed, kind === 'shanghai' ? 'rgba(140,220,255,0.5)' : undefined);
+      if (kind === 'tokyo' && seed % 3 === 0) {
+        const nc = T.neon[seed % T.neon.length];
+        ctx.fillStyle = nc; ctx.globalAlpha = 0.7 + 0.3 * Math.sin(globalT * 5 + seed);
+        rr(x + 14, g - bh - 24, 62, 18, 4); ctx.fill(); ctx.globalAlpha = 1;
+        ctx.fillStyle = '#0a0a1a'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+        const s = cityData().signs; ctx.fillText(s[seed % s.length], x + 45, g - bh - 11);
+      }
+    });
+  } else if (kind === 'london') {
+    tileRow(dist * 0.22, 118, (x, i, seed) => { const h = 92 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 110, h); });
+    tileRow(dist * 0.4, 102, (x, i, seed) => {
+      const bh = 126 + (seed % 2) * 22;
+      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 94, bh);
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
+      for (let r = 1; r < 5; r++) { const yy = g - bh + r * 24; ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + 94, yy); ctx.stroke(); }
+      winGrid(x + 8, g - 14, g - bh + 12, 78, 3, seed);
+      ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(x - 2, g - bh); ctx.lineTo(x + 96, g - bh); ctx.lineTo(x + 82, g - bh - 16); ctx.lineTo(x + 12, g - bh - 16); ctx.closePath(); ctx.fill();
+    });
+  } else if (kind === 'seoul') {
+    ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(0, g); ctx.quadraticCurveTo(W * 0.5, g - 150, W, g); ctx.closePath(); ctx.fill();
+    tileRow(dist * 0.4, 76, (x, i, seed) => {
+      const bh = 120 + (seed % 4) * 42;
+      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 66, bh);
+      winGrid(x + 6, g - 14, g - bh + 12, 54, 3, seed, 'rgba(255,225,150,0.45)');
+      ctx.fillStyle = `rgba(255,90,90,${0.4 + 0.3 * Math.sin(globalT * 4 + seed)})`; ctx.fillRect(x + 30, g - bh - 6, 4, 6);
+    });
+  } else if (kind === 'barcelona') {
+    tileRow(dist * 0.22, 112, (x, i, seed) => { const h = 90 + (seed % 3) * 14; ctx.fillStyle = far; ctx.fillRect(x, g - h, 104, h); });
+    tileRow(dist * 0.4, 104, (x, i, seed) => {
+      const bh = 132 + (seed % 2) * 16;
+      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 96, bh);
+      winGrid(x + 8, g - 14, g - bh + 12, 80, 3, seed);
+      ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(x - 2, g - bh);
+      for (let k = 0; k <= 4; k++) ctx.quadraticCurveTo(x + k * 24 + 12, g - bh - 13, x + k * 24 + 24, g - bh);
+      ctx.lineTo(x + 96, g - bh); ctx.closePath(); ctx.fill();
+    });
+  } else if (kind === 'sydney') {
+    tileRow(dist * 0.22, 104, (x, i, seed) => { const h = 66 + (seed % 3) * 22; ctx.fillStyle = far; ctx.fillRect(x, g - h, 96, h); });
+    ctx.strokeStyle = 'rgba(120,200,255,0.22)'; ctx.lineWidth = 2;
+    for (let k = 0; k < 7; k++) { const wx = ((k * 170 - (dist * 8) % 170) % (W + 170)) - 40; ctx.beginPath(); ctx.moveTo(wx, g - 8 + (k % 2) * 3); ctx.lineTo(wx + 70, g - 8 + (k % 2) * 3); ctx.stroke(); }
+  }
+
+  bigLandmark(kind, dist, T);
+  if (kind === 'sydney') drawGulls(dist);
+}
+
+// 큰 랜드마크 — 도시별 상징 건물 (시드니는 하버브릿지+오페라하우스로 특별 처리)
+function bigLandmark(kind, dist, T) {
   const g = GY();
   const scroll = dist * 0.1;
-  const period = W * 2.6;
-  let sx = W + 260 - ((((scroll + W * 0.5) % period) + period) % period);
-  if (sx < -280 || sx > W + 280) return;
-  const col = lighten(T.mid, 0.16);   // 건물보다 살짝 밝게 → 랜드마크가 또렷하게 보인다
-  const light = T.neon[2] || '#ffd166';
-  const light2 = T.neon[0] || '#ff6fa5';
-  ctx.save();
-  ctx.translate(sx, g - 24);
-  ctx.fillStyle = col;
-  const dot = (x, y, c, r) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r || 2.2, 0, TAU); ctx.fill(); ctx.fillStyle = col; };
+  const col = lighten(T.mid, 0.2);
+  const light = T.neon[2] || '#ffd166', light2 = T.neon[0] || '#ff6fa5';
+  if (kind === 'sydney') { drawSydney(scroll, T, col, light); return; }
 
-  if (kind === 'paris') {                    // 에펠탑
+  const period = W * 3.0;
+  const sx = W + 340 - ((((scroll + W * 0.5) % period) + period) % period);
+  if (sx < -360 || sx > W + 360) return;
+  ctx.save();
+  ctx.translate(sx, g - 22);
+  ctx.scale(1.55, 1.55);
+  ctx.fillStyle = col;
+  const dot = (x, y, c, r) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r || 2, 0, TAU); ctx.fill(); ctx.fillStyle = col; };
+
+  if (kind === 'paris') {                     // 에펠탑 (아치 + 격자 + 3단)
     ctx.beginPath();
-    ctx.moveTo(-46, 0); ctx.lineTo(-14, -112); ctx.lineTo(-8, -186); ctx.lineTo(-4, -238);
-    ctx.lineTo(4, -238); ctx.lineTo(8, -186); ctx.lineTo(14, -112); ctx.lineTo(46, 0);
-    ctx.lineTo(26, 0); ctx.lineTo(9, -104); ctx.lineTo(-9, -104); ctx.lineTo(-26, 0);
+    ctx.moveTo(-46, 0); ctx.lineTo(-15, -112); ctx.lineTo(-8, -188); ctx.lineTo(-4, -238);
+    ctx.lineTo(4, -238); ctx.lineTo(8, -188); ctx.lineTo(15, -112); ctx.lineTo(46, 0);
+    ctx.lineTo(27, 0); ctx.lineTo(9, -104); ctx.lineTo(-9, -104); ctx.lineTo(-27, 0);
     ctx.closePath(); ctx.fill();
-    ctx.fillRect(-32, -46, 64, 7); ctx.fillRect(-18, -150, 36, 5); ctx.fillRect(-2, -256, 4, 20);
-    dot(0, -256, light, 2.6);
-  } else if (kind === 'tokyo') {             // 도쿄타워 (붉은 격자탑)
-    ctx.fillStyle = '#7c2a2a';
+    ctx.strokeStyle = col; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-27, 0); ctx.quadraticCurveTo(0, -60, 27, 0); ctx.stroke();   // 밑 아치
+    ctx.fillRect(-33, -48, 66, 7); ctx.fillRect(-19, -150, 38, 5); ctx.fillRect(-2, -256, 4, 20);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+    for (let yy = -20; yy > -232; yy -= 16) { const wd = 12 + 34 * (-yy / 238); ctx.beginPath(); ctx.moveTo(-wd / 2, yy); ctx.lineTo(wd / 2, yy); ctx.stroke(); }
+    dot(0, -256, light, 2.4); dot(-33, -46, light, 1.4); dot(33, -46, light, 1.4);
+  } else if (kind === 'tokyo') {              // 도쿄타워
+    ctx.fillStyle = '#8a2f2b';
     ctx.beginPath();
-    ctx.moveTo(-48, 0); ctx.lineTo(-14, -120); ctx.lineTo(-7, -196); ctx.lineTo(-4, -240);
-    ctx.lineTo(4, -240); ctx.lineTo(7, -196); ctx.lineTo(14, -120); ctx.lineTo(48, 0);
+    ctx.moveTo(-48, 0); ctx.lineTo(-15, -120); ctx.lineTo(-7, -196); ctx.lineTo(-4, -240);
+    ctx.lineTo(4, -240); ctx.lineTo(7, -196); ctx.lineTo(15, -120); ctx.lineTo(48, 0);
     ctx.lineTo(28, 0); ctx.lineTo(9, -112); ctx.lineTo(-9, -112); ctx.lineTo(-28, 0);
     ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#8f3a34'; ctx.fillRect(-30, -60, 60, 8); ctx.fillRect(-16, -150, 32, 6);
-    ctx.fillStyle = '#7c2a2a'; ctx.fillRect(-2, -262, 4, 22);
-    dot(0, -262, '#ff5c4d', 2.6);
-  } else if (kind === 'seoul') {             // N서울타워 (남산 위)
-    ctx.beginPath(); ctx.moveTo(-130, 0); ctx.quadraticCurveTo(0, -66, 130, 0); ctx.closePath(); ctx.fill();
-    ctx.fillRect(-9, -176, 18, 122);
-    ctx.beginPath(); ctx.moveTo(-20, -176); ctx.lineTo(20, -176); ctx.lineTo(14, -196); ctx.lineTo(-14, -196); ctx.closePath(); ctx.fill();
-    ctx.fillRect(-14, -210, 28, 16);
-    ctx.fillRect(-2, -262, 4, 52);
-    dot(0, -262, '#ff5c4d', 2.8); dot(0, -202, light, 1.8);
-  } else if (kind === 'barcelona') {         // 사그라다 파밀리아 (여러 첨탑)
-    const sp = [[-42, 150], [-22, 200], [0, 236], [22, 205], [42, 158]];
+    ctx.fillStyle = '#b6524a'; ctx.fillRect(-30, -60, 60, 9); ctx.fillRect(-17, -150, 34, 6);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1;
+    for (let yy = -20; yy > -238; yy -= 16) { const wd = 12 + 36 * (-yy / 240); ctx.beginPath(); ctx.moveTo(-wd / 2, yy); ctx.lineTo(wd / 2, yy); ctx.stroke(); }
+    ctx.fillStyle = '#8a2f2b'; ctx.fillRect(-2, -262, 4, 22);
+    dot(0, -262, '#ff5c4d', 2.4);
+  } else if (kind === 'seoul') {              // N서울타워
+    ctx.beginPath(); ctx.moveTo(-140, 0); ctx.quadraticCurveTo(0, -70, 140, 0); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-9, -178, 18, 122);
+    ctx.beginPath(); ctx.moveTo(-22, -178); ctx.lineTo(22, -178); ctx.lineTo(15, -200); ctx.lineTo(-15, -200); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-15, -214, 30, 16); ctx.fillRect(-2, -268, 4, 54);
+    dot(0, -268, '#ff5c4d', 2.6); dot(0, -206, light, 1.6); dot(0, -190, light2, 1.6);
+  } else if (kind === 'barcelona') {          // 사그라다 파밀리아
+    const sp = [[-46, 152], [-24, 206], [0, 244], [24, 210], [46, 160]];
     for (const [x, h] of sp) {
       ctx.beginPath();
-      ctx.moveTo(x - 9, 0); ctx.lineTo(x - 5, -h * 0.65); ctx.lineTo(x, -h); ctx.lineTo(x + 5, -h * 0.65); ctx.lineTo(x + 9, 0);
+      ctx.moveTo(x - 10, 0); ctx.lineTo(x - 5, -h * 0.62); ctx.lineTo(x, -h); ctx.lineTo(x + 5, -h * 0.62); ctx.lineTo(x + 10, 0);
       ctx.closePath(); ctx.fill();
-      dot(x, -h + 4, light, 1.8);
-      ctx.fillStyle = col;
+      for (let yy = -h * 0.5; yy > -h + 10; yy -= 14) dot(x, yy, light, 1.4);
+      dot(x, -h + 5, light2, 1.8); ctx.fillStyle = col;
     }
-  } else if (kind === 'shanghai') {          // 동방명주 (구슬탑)
-    for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 5, -64); ctx.lineTo(s * 34, 0); ctx.lineTo(s * 20, 0); ctx.lineTo(s * 3, -64); ctx.closePath(); ctx.fill(); }
-    ctx.fillRect(-6, -210, 12, 150);
-    ctx.beginPath(); ctx.arc(0, -98, 22, 0, TAU); ctx.fill();
-    ctx.beginPath(); ctx.arc(0, -178, 15, 0, TAU); ctx.fill();
-    ctx.fillRect(-2, -252, 4, 42);
-    dot(0, -98, light2, 3); dot(0, -178, light2, 2.4); dot(0, -252, light, 2.4);
-  } else if (kind === 'nyc') {               // 엠파이어 스테이트 빌딩
-    ctx.fillRect(-42, -150, 84, 150); ctx.fillRect(-30, -202, 60, 52);
-    ctx.fillRect(-18, -238, 36, 36); ctx.fillRect(-7, -266, 14, 28); ctx.fillRect(-2, -300, 4, 34);
-    dot(0, -300, light, 2.4);
+  } else if (kind === 'shanghai') {           // 동방명주
+    for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 5, -64); ctx.lineTo(s * 36, 0); ctx.lineTo(s * 22, 0); ctx.lineTo(s * 3, -64); ctx.closePath(); ctx.fill(); }
+    ctx.fillRect(-6, -212, 12, 150);
+    ctx.beginPath(); ctx.arc(0, -100, 24, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -180, 16, 0, TAU); ctx.fill();
+    ctx.fillRect(-2, -256, 4, 44);
+    dot(0, -100, light2, 3.2); dot(0, -180, light2, 2.6); dot(0, -256, light, 2.2);
+  } else if (kind === 'nyc') {                // 엠파이어 스테이트 빌딩
+    ctx.fillRect(-42, -152, 84, 152); ctx.fillRect(-30, -204, 60, 52);
+    ctx.fillRect(-18, -240, 36, 36); ctx.fillRect(-7, -270, 14, 30); ctx.fillRect(-2, -306, 4, 36);
+    dot(0, -306, light, 2.4);
     ctx.fillStyle = 'rgba(255,235,170,0.5)';
-    for (let r = 0; r < 5; r++) for (let c = 0; c < 4; c++) if ((r + c) % 2) ctx.fillRect(-34 + c * 20, -140 + r * 26, 6, 10);
+    for (let r = 0; r < 6; r++) for (let c = 0; c < 4; c++) if ((r + c) % 2) ctx.fillRect(-34 + c * 20, -142 + r * 24, 6, 9);
     ctx.fillStyle = col;
-  } else if (kind === 'london') {            // 빅벤 (시계탑)
-    ctx.fillRect(-19, -212, 38, 212);
-    ctx.fillStyle = light; ctx.beginPath(); ctx.arc(0, -182, 10, 0, TAU); ctx.fill();
-    ctx.fillStyle = '#0a0a1a'; ctx.fillRect(-1, -190, 2, 8); ctx.fillRect(0, -183, 7, 2);
-    ctx.fillStyle = col; ctx.fillRect(-22, -238, 44, 28);
-    ctx.beginPath(); ctx.moveTo(-19, -238); ctx.lineTo(0, -288); ctx.lineTo(19, -238); ctx.closePath(); ctx.fill();
-    dot(0, -288, light, 2.2);
-  } else if (kind === 'sydney') {            // 시드니 오페라 하우스 (조개 지붕)
-    const sail = (x, w, h, f) => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.quadraticCurveTo(x + w * f, -h, x + w, 0); ctx.closePath(); ctx.fill(); };
-    ctx.fillStyle = col;
-    sail(-96, 60, 78, 0.15); sail(-70, 66, 108, 0.18); sail(-30, 60, 84, 0.2);
-    sail(20, 64, 100, 0.8); sail(58, 58, 74, 0.85);
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    sail(-70, 66, 108, 0.18); sail(20, 64, 100, 0.8);
-    ctx.fillStyle = col;
+  } else if (kind === 'london') {             // 빅벤
+    ctx.fillRect(-20, -216, 40, 216);
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1;
+    for (let yy = -24; yy > -190; yy -= 22) { ctx.beginPath(); ctx.moveTo(-20, yy); ctx.lineTo(20, yy); ctx.stroke(); }
+    ctx.fillStyle = light; ctx.beginPath(); ctx.arc(0, -186, 11, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#0a0a1a'; ctx.fillRect(-1, -195, 2, 9); ctx.fillRect(0, -187, 8, 2);
+    ctx.fillStyle = col; ctx.fillRect(-23, -244, 46, 30);
+    ctx.beginPath(); ctx.moveTo(-20, -244); ctx.lineTo(0, -298); ctx.lineTo(20, -244); ctx.closePath(); ctx.fill();
+    dot(0, -298, light, 2.2);
   }
   ctx.restore();
+}
+
+// 시드니: 하버브릿지(큰 아치) + 오페라하우스(조개지붕)
+function drawSydney(scroll, T, col, light) {
+  const g = GY();
+  const cx = W * 0.5 + Math.sin(scroll * 0.0015) * 24;
+  const span = Math.min(W * 0.92, 640), bh = 120;
+  const lx = cx - span / 2, rx = cx + span / 2, deckY = g - 44;
+  ctx.fillStyle = col;
+  // 교각(파일런)
+  ctx.fillRect(lx - 8, deckY - 66, 18, 66 + 44); ctx.fillRect(rx - 10, deckY - 66, 18, 66 + 44);
+  // 상판
+  ctx.fillRect(lx, deckY, span, 8);
+  // 아치
+  ctx.strokeStyle = col; ctx.lineWidth = 9; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(lx, deckY); ctx.quadraticCurveTo(cx, deckY - bh, rx, deckY); ctx.stroke();
+  ctx.lineWidth = 2;                          // 행어(수직선)
+  for (let t = 0.08; t < 0.95; t += 0.08) {
+    const hx = lx + span * t, ay = deckY - Math.sin(Math.PI * t) * bh + Math.pow(Math.abs(t - 0.5) * 2, 2) * 6;
+    ctx.beginPath(); ctx.moveTo(hx, Math.min(ay, deckY)); ctx.lineTo(hx, deckY); ctx.stroke();
+  }
+  ctx.fillStyle = light; ctx.beginPath(); ctx.arc(lx + 1, deckY - 66, 2, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.arc(rx - 1, deckY - 66, 2, 0, TAU); ctx.fill();
+  // 오페라하우스 (다리 오른쪽 발치 앞)
+  ctx.save();
+  ctx.translate(rx - 40, g - 20);
+  const sail = (x, w, h, f, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(x, 0); ctx.quadraticCurveTo(x + w * f, -h, x + w, 0); ctx.closePath(); ctx.fill(); };
+  const white = 'rgba(236,244,255,0.92)', shade = 'rgba(198,214,236,0.9)';
+  sail(-70, 46, 60, 0.2, shade); sail(-52, 52, 88, 0.22, white);
+  sail(-20, 46, 66, 0.25, shade); sail(6, 50, 84, 0.75, white); sail(40, 44, 58, 0.8, shade);
+  ctx.restore();
+}
+
+// 갈매기 (시드니 하늘)
+function drawGulls(dist) {
+  ctx.strokeStyle = 'rgba(232,240,255,0.75)'; ctx.lineWidth = 2.4; ctx.lineCap = 'round';
+  for (let i = 0; i < 4; i++) {
+    const gx = ((i * W * 0.26 - (dist * 3.5) % (W * 1.1)) % (W * 1.1) + W * 1.1) % (W * 1.1) - 30;
+    const gy = H * 0.16 + (i % 2) * 34 + Math.sin(globalT * 2 + i) * 6;
+    const fw = 8 + (i % 2) * 3, flap = Math.sin(globalT * 6 + i) * 3;
+    ctx.beginPath();
+    ctx.moveTo(gx - fw, gy - flap); ctx.quadraticCurveTo(gx, gy + 4, gx, gy);
+    ctx.quadraticCurveTo(gx, gy + 4, gx + fw, gy - flap); ctx.stroke();
+  }
 }
 
 function drawSkyline(scroll, baseY, maxH, color, seedStep, neonOn, neonColors) {
@@ -1455,9 +1652,10 @@ function drawHeroine(x, y, opt) {
   const o = opt || {};
   if (o.blink && Math.floor(globalT * 12) % 2 === 0) ctx.globalAlpha = 0.35;
   ctx.save();
-  ctx.translate(x, y);
-  if (o.hurt) ctx.rotate(-0.18);
-  else if (o.slip) ctx.rotate(0.2);   // 빙판에서 뒤로 기우뚱 미끄러지는 자세
+  ctx.translate(x, y - (o.spin ? 40 : 0));   // 회전 중엔 발끝 기준을 몸 중앙으로
+  if (o.spin) ctx.rotate(o.spin);            // 빙판에서 팽이처럼 빙글빙글
+  else if (o.hurt) ctx.rotate(-0.18);
+  if (o.spin) ctx.translate(0, 40);
   const ph = o.phase || 0;
   const runc = o.pose === 'run';
   const legA = runc ? Math.sin(ph) * 0.9 : (o.pose === 'jump' ? 0.5 : 0.1);
@@ -1838,8 +2036,8 @@ function drawCoin(c) {
 
 function drawPowerup(u) {
   const bob = Math.sin(globalT * 3 + u.ph) * 6;
-  const icons = { magnet: '🧲', shield: '🛡️', boost: '⚡', heart: '❤️', web: '🕸️', sling: '🎯', fire: '🔥' };
-  const colors = { magnet: '#8fe3ff', shield: '#9fd8ff', boost: '#ffd166', heart: '#ff8fb3', web: '#dfe7ff', sling: '#b9f5c9', fire: '#ff8a3c' };
+  const icons = { magnet: '🧲', shield: '🛡️', boost: '⚡', heart: '❤️', web: '🕸️', sling: '🎯', fire: '🔥', police: '🚨' };
+  const colors = { magnet: '#8fe3ff', shield: '#9fd8ff', boost: '#ffd166', heart: '#ff8fb3', web: '#dfe7ff', sling: '#b9f5c9', fire: '#ff8a3c', police: '#5ad1ff' };
   ctx.save();
   ctx.translate(u.x, u.y + bob);
   ctx.fillStyle = colors[u.type];
@@ -2070,7 +2268,8 @@ function drawPlayScene() {
     ctx.translate(bx, b.y);
     ctx.scale(1.4, 1.4);
     ctx.translate(-bx, -b.y);
-    drawThief(bx, b.y, { phase: run.dist * 0.1, boss: true, tumble: b.staggerT > 0.3 ? Math.sin(globalT * 40) * 0.12 : 0 });
+    const tumble = b.tripT > 0 ? Math.sin(globalT * 22) * 0.5 : (b.staggerT > 0.3 ? Math.sin(globalT * 40) * 0.12 : 0);
+    drawThief(bx, b.y, { phase: run.dist * 0.1, boss: true, tumble });
     ctx.restore();
     // HP 핍
     ctx.textAlign = 'center';
@@ -2081,18 +2280,29 @@ function drawPlayScene() {
     }
     ctx.globalAlpha = 1;
   }
-  // 보스 투척물 (빙글빙글 도는 쓰레기통 뚜껑)
+  // 보스 방구 발사물 — 초록빛 방구 바람 (구름 뭉게뭉게 + 냄새선 + 뿡/흥/칫 텍스트)
   for (const pj of run.projectiles) {
     ctx.save();
     ctx.translate(pj.x, pj.y);
-    ctx.rotate(pj.spin + pj.t * 14);
-    ctx.fillStyle = '#8a92aa';
-    ctx.beginPath(); ctx.ellipse(0, 0, 15, 13, 0, 0, TAU); ctx.fill();
-    ctx.fillStyle = '#6b7390';
-    ctx.beginPath(); ctx.arc(0, 0, 7, 0, TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(14, 0); ctx.stroke();
+    // 뭉게뭉게 방구 구름
+    ctx.fillStyle = 'rgba(150,190,90,0.55)';
+    for (let i = 0; i < 4; i++) {
+      const a = pj.puff + i * 1.6;
+      ctx.beginPath(); ctx.arc(Math.cos(a) * 7 + 6, Math.sin(a) * 5, 8 - i, 0, TAU); ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(182,217,122,0.85)';
+    ctx.beginPath(); ctx.arc(0, 0, 10, 0, TAU); ctx.fill();
+    // 뒤로 퍼지는 냄새선
+    ctx.strokeStyle = 'rgba(150,190,90,0.5)'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+      const yy = -6 + i * 6;
+      ctx.beginPath(); ctx.moveTo(14, yy); ctx.quadraticCurveTo(26, yy - 4 + Math.sin(pj.puff + i) * 3, 34, yy); ctx.stroke();
+    }
+    // 방구 텍스트
+    ctx.fillStyle = '#6b8f2e';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(pj.word || '뿡!', -6, -14);
     ctx.restore();
   }
   // 플레이어 원거리 무기 발사체 (거미줄/새총/불꽃)
@@ -2154,13 +2364,13 @@ function drawPlayScene() {
     ctx.globalAlpha = 1;
   }
 
-  // 주인공 (빙판에서 미끄러지면 앞으로 밀리고 살짝 기운다)
+  // 주인공 (빙판에서 빙글빙글 돌며 앞으로 미끄러진다)
   drawHeroine(PX() + P.slide, P.y, {
     pose: P.ground ? 'run' : 'jump',
     phase: run.dist * 0.12,
     punch: P.punchT > 0.06,
     hurt: P.hurtT > 0,
-    slip: P.iceT > 0,
+    spin: P.spinT > 0 ? globalT * 16 : 0,
     blink: P.inv > 0 && P.boostT <= 0,
   });
 
@@ -2192,6 +2402,15 @@ function drawPlayScene() {
 
   drawHUD();
   drawStageUp();
+  // 경찰 사이렌 번쩍임 (빨강↔파랑)
+  if (run.policeFlash > 0) {
+    const blue = Math.sin(globalT * 22) > 0;
+    ctx.fillStyle = blue ? 'rgba(90,160,255,0.18)' : 'rgba(255,80,90,0.18)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = '40px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🚨', W / 2, H * 0.16);
+  }
 }
 
 // 레벨업(다음 구역 진입) 연출 오버레이

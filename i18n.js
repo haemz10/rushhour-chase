@@ -94,6 +94,8 @@ const LANGS = {
     bossAppear: '🚨 도둑 두목 등장!!',
     bossDown: '🚨 두목 검거!! +{0}',
     bossTaunt: '두목: "흥, 다음에 보자!"',
+    bossTrip: '💥 두목이 돌부리에 걸려 자빠졌다!',
+    policeChance: '🚨 경찰 찬스 등장!', policeGo: '🚨 경찰 출동! 도둑 검거!',
     reviveAd: '📺 광고 보고 무료 부활',
   },
 
@@ -186,6 +188,8 @@ const LANGS = {
     bossAppear: '🚨 The boss thief appears!!',
     bossDown: '🚨 Boss busted!! +{0}',
     bossTaunt: 'Boss: "You got lucky, kid!"',
+    bossTrip: '💥 The boss tripped on a rock!',
+    policeChance: '🚨 Police backup!', policeGo: '🚨 Police to the rescue!',
     reviveAd: '📺 Watch an ad — revive free',
   },
 
@@ -278,6 +282,8 @@ const LANGS = {
     bossAppear: '🚨 泥棒のボス登場!!',
     bossDown: '🚨 ボス検挙!! +{0}',
     bossTaunt: 'ボス:「覚えてろよ!」',
+    bossTrip: '💥 ボスが石につまずいて転んだ!',
+    policeChance: '🚨 警察チャンス!', policeGo: '🚨 警察出動!泥棒逮捕!',
     reviveAd: '📺 広告を見て無料復活',
   },
 
@@ -370,6 +376,8 @@ const LANGS = {
     bossAppear: '🚨 小偷头目出现!!',
     bossDown: '🚨 头目落网!! +{0}',
     bossTaunt: '头目:"走着瞧!"',
+    bossTrip: '💥 头目被石头绊倒了!',
+    policeChance: '🚨 警察支援!', policeGo: '🚨 警察出动!抓住小偷!',
     reviveAd: '📺 看广告免费复活',
   },
 
@@ -462,6 +470,8 @@ const LANGS = {
     bossAppear: '🚨 ¡¡Aparece el jefe de los ladrones!!',
     bossDown: '🚨 ¡¡Jefe atrapado!! +{0}',
     bossTaunt: 'Jefe: «¡Tuviste suerte!»',
+    bossTrip: '💥 ¡El jefe tropezó con una piedra!',
+    policeChance: '🚨 ¡Refuerzo policial!', policeGo: '🚨 ¡La policía al rescate!',
     reviveAd: '📺 Mira un anuncio: revive gratis',
   },
 
@@ -554,6 +564,8 @@ const LANGS = {
     bossAppear: '🚨 Le chef des voleurs apparaît !!',
     bossDown: '🚨 Chef arrêté !! +{0}',
     bossTaunt: 'Chef : « On se reverra ! »',
+    bossTrip: '💥 Le chef a trébuché sur un caillou !',
+    policeChance: '🚨 Renfort police !', policeGo: '🚨 La police intervient !',
     reviveAd: '📺 Pub → résurrection gratuite',
   },
 };
