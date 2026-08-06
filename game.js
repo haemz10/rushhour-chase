@@ -1210,7 +1210,7 @@ function updatePlay(dt0) {
       b.throwT -= dt;
       if (b.throwT <= 0) {
         b.throwT = rand(1.1, 1.8) - Math.min(0.5, run.stage * 0.05);
-        const words = ['뿡!', '흥!', '칫!'];
+        const words = L.fart;   // 언어별 방구 의성어
         const shoot = () => {
           const high = Math.random() < 0.5;             // true=머리 위(가만히), false=몸통(점프)
           run.projectiles.push({
@@ -1222,7 +1222,7 @@ function updatePlay(dt0) {
         shoot();
         if (run.stage >= 3 && Math.random() < 0.4) shoot(); // 후반 2연발
         Sound.sfx('throw');
-        addFloat(px + b.dx - 30, b.y - 96, ['뿡~💨', '흥!💨', '칫!💨'][Math.floor(rand(0, 3))], '#b6d97a', 1.1);
+        addFloat(px + b.dx - 30, b.y - 96, words[Math.floor(rand(0, 3))] + ' 💨', '#b6d97a', 1.1);
       }
     }
     // 펀치 타격
@@ -2328,7 +2328,7 @@ function drawPlayScene() {
     ctx.fillStyle = '#6b8f2e';
     ctx.font = 'bold 15px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(pj.word || '뿡!', -6, -14);
+    ctx.fillText(pj.word || (L.fart ? L.fart[0] : 'Pfft!'), -6, -14);
     ctx.restore();
   }
   // 플레이어 원거리 무기 발사체 (거미줄/새총/불꽃)
