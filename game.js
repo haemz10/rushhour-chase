@@ -839,6 +839,7 @@ function catchThief(method) {
     run.speedBurst = 120;
     run.stageUpStage = run.stage + 1;   // 표시용(1-based)
     run.stageUpTheme = run.theme;
+    run.stageUpStory = (L.storyBeats && L.storyBeats.length) ? L.storyBeats[(run.stage - 1) % L.storyBeats.length] : '';
     run.policeSpawned = false;          // 다음 스테이지에서 경찰 아이템 다시 등장 가능
     Sound.nextTrack();                  // 레벨마다 내 음악(custom) 랜덤 교체
     run.slowmo = Math.max(run.slowmo, 0.9);
@@ -1319,7 +1320,9 @@ function updatePlay(dt0) {
   // 도둑 (보스전 중에는 일반 도둑 미등장)
   if (run.thief) {
     const th = run.thief;
-    const factor = th.escaping ? 1.4 : 0.885;   // 평소 더 빨리 따라잡히게 (0.91 → 0.885)
+    // 레벨이 오를수록 도둑이 더 빨리 도망쳐 추격이 길고 어려워진다 (0.885 → 최대 ~0.955)
+    const fleeBase = 0.885 + Math.min(0.07, run.stage * 0.014);
+    const factor = th.escaping ? 1.4 : fleeBase;
     th.dx += (factor - 1) * sp * dt;
     // 안전장치: 추격 중 도둑이 플레이어 뒤로 빠져 사라지는 소프트락 방지 (앞에서 대기)
     if (!th.escaping) th.dx = Math.max(52, th.dx);
@@ -1347,7 +1350,10 @@ function updatePlay(dt0) {
     if (run.policeReady) { run.policeReady = false; catchThief('police'); }
     // 잡기! (근접 펀치) — 빙판에 밀려 앞으로 나간 만큼(slide) 손이 더 닿는다
     else if (!th.escaping && P.punchT > 0.1 && th.dx - P.slide < 115) {
-      catchThief('punch');
+      // 레벨이 높으면 도둑이 펀치를 요리조리 피한다 (여러 번 시도해야 잡힘) — 잡기 난이도↑
+      const dodgeCh = Math.min(0.45, run.stage * 0.1);
+      if (Math.random() < dodgeCh) thiefDodge();
+      else catchThief('punch');
     }
   } else if (!run.boss && run.bossPending <= 0) {
     run.thiefTimer -= dt;
@@ -1456,85 +1462,88 @@ function drawCityScape(kind, dist, T) {
   const g = GY();
   const near = lighten(T.mid, 0.05);
   const far = lighten(T.far, 0.05);
+  cityFar(kind, dist, far, g);              // 원경 (가장 뒤, 느린 패럴랙스)
+  bigLandmark(kind, dist, T);               // 랜드마크 (원경 앞·근경 뒤 — 근경과 같은 속도로 스크롤)
+  cityNear(kind, dist, T, near, far, g);    // 근경 (가장 앞 — 랜드마크 밑동을 가려 스카이라인에 녹아듦)
+  if (kind === 'sydney') drawGulls(dist);
+}
 
-  // 탑형 랜드마크는 배경(원경) 레이어로 먼저 그려, 근경 건물이 앞을 가리며 스카이라인에 녹아들게 한다.
-  // (시드니 하버브릿지는 낮은 원경 앞에 있어야 자연스러워, 아래에서 원경 뒤에 그린다)
-  if (kind !== 'sydney') bigLandmark(kind, dist, T);
-
-  if (kind === 'paris') {
-    tileRow(dist * 0.22, 122, (x, i, seed) => { const h = 88 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 114, h); });
-    tileRow(dist * 0.4, 108, (x, i, seed) => {
-      const bh = 148 + (seed % 2) * 16;
-      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 100, bh);
-      ctx.fillStyle = far;                     // 만사르 지붕
-      ctx.beginPath(); ctx.moveTo(x - 4, g - bh); ctx.lineTo(x + 104, g - bh); ctx.lineTo(x + 94, g - bh - 24); ctx.lineTo(x + 6, g - bh - 24); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = 'rgba(255,225,150,0.45)';
-      for (let k = 0; k < 3; k++) ctx.fillRect(x + 22 + k * 26, g - bh - 19, 8, 9);
-      winGrid(x + 8, g - 16, g - bh + 14, 84, 3, seed);
-      ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 2;
-      for (let r = 1; r < 4; r++) { const yy = g - bh + 14 + r * 32; ctx.beginPath(); ctx.moveTo(x + 10, yy); ctx.lineTo(x + 90, yy); ctx.stroke(); }
-      ctx.fillStyle = far; ctx.fillRect(x + 72, g - bh - 40, 6, 16); ctx.fillRect(x + 82, g - bh - 44, 6, 20);
-    });
-  } else if (kind === 'nyc' || kind === 'shanghai' || kind === 'tokyo') {
-    tileRow(dist * 0.22, 90, (x, i, seed) => { const h = 110 + (seed % 4) * 44; ctx.fillStyle = far; ctx.fillRect(x, g - h, 84, h); });
-    tileRow(dist * 0.4, 98, (x, i, seed) => {
-      const bh = 150 + (seed % 5) * 46;
-      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 90, bh);
-      if (kind === 'nyc' && seed % 3 === 0) { ctx.fillStyle = far; ctx.fillRect(x + 22, g - bh - 22, 20, 22); ctx.beginPath(); ctx.moveTo(x + 20, g - bh - 22); ctx.lineTo(x + 44, g - bh - 22); ctx.lineTo(x + 32, g - bh - 34); ctx.closePath(); ctx.fill(); }
-      winGrid(x + 6, g - 16, g - bh + 12, 78, 4, seed, kind === 'shanghai' ? 'rgba(140,220,255,0.5)' : undefined);
-      if (kind === 'tokyo' && seed % 3 === 0) {
-        const nc = T.neon[seed % T.neon.length];
-        ctx.fillStyle = nc; ctx.globalAlpha = 0.7 + 0.3 * Math.sin(globalT * 5 + seed);
-        rr(x + 14, g - bh - 24, 62, 18, 4); ctx.fill(); ctx.globalAlpha = 1;
-        ctx.fillStyle = '#0a0a1a'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
-        const s = cityData().signs; ctx.fillText(s[seed % s.length], x + 45, g - bh - 11);
-      }
-    });
-  } else if (kind === 'london') {
-    tileRow(dist * 0.22, 118, (x, i, seed) => { const h = 92 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 110, h); });
-    tileRow(dist * 0.4, 102, (x, i, seed) => {
-      const bh = 126 + (seed % 2) * 22;
-      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 94, bh);
-      ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
-      for (let r = 1; r < 5; r++) { const yy = g - bh + r * 24; ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + 94, yy); ctx.stroke(); }
-      winGrid(x + 8, g - 14, g - bh + 12, 78, 3, seed);
-      ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(x - 2, g - bh); ctx.lineTo(x + 96, g - bh); ctx.lineTo(x + 82, g - bh - 16); ctx.lineTo(x + 12, g - bh - 16); ctx.closePath(); ctx.fill();
-    });
-  } else if (kind === 'seoul') {
-    ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(0, g); ctx.quadraticCurveTo(W * 0.5, g - 150, W, g); ctx.closePath(); ctx.fill();
-    tileRow(dist * 0.4, 76, (x, i, seed) => {
-      const bh = 120 + (seed % 4) * 42;
-      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 66, bh);
-      winGrid(x + 6, g - 14, g - bh + 12, 54, 3, seed, 'rgba(255,225,150,0.45)');
-      ctx.fillStyle = `rgba(255,90,90,${0.4 + 0.3 * Math.sin(globalT * 4 + seed)})`; ctx.fillRect(x + 30, g - bh - 6, 4, 6);
-    });
-  } else if (kind === 'barcelona') {
-    tileRow(dist * 0.22, 112, (x, i, seed) => { const h = 90 + (seed % 3) * 14; ctx.fillStyle = far; ctx.fillRect(x, g - h, 104, h); });
-    tileRow(dist * 0.4, 104, (x, i, seed) => {
-      const bh = 132 + (seed % 2) * 16;
-      ctx.fillStyle = near; ctx.fillRect(x, g - bh, 96, bh);
-      winGrid(x + 8, g - 14, g - bh + 12, 80, 3, seed);
-      ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(x - 2, g - bh);
-      for (let k = 0; k <= 4; k++) ctx.quadraticCurveTo(x + k * 24 + 12, g - bh - 13, x + k * 24 + 24, g - bh);
-      ctx.lineTo(x + 96, g - bh); ctx.closePath(); ctx.fill();
-    });
-  } else if (kind === 'sydney') {
-    tileRow(dist * 0.22, 104, (x, i, seed) => { const h = 66 + (seed % 3) * 22; ctx.fillStyle = far; ctx.fillRect(x, g - h, 96, h); });
+// 원경 실루엣 (느리게 흐르는 배경)
+function cityFar(kind, dist, far, g) {
+  const s = dist * 0.4;
+  if (kind === 'paris') tileRow(s, 122, (x, i, seed) => { const h = 88 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 114, h); });
+  else if (kind === 'nyc' || kind === 'shanghai' || kind === 'tokyo') tileRow(s, 90, (x, i, seed) => { const h = 110 + (seed % 4) * 44; ctx.fillStyle = far; ctx.fillRect(x, g - h, 84, h); });
+  else if (kind === 'london') tileRow(s, 118, (x, i, seed) => { const h = 92 + (seed % 3) * 16; ctx.fillStyle = far; ctx.fillRect(x, g - h, 110, h); });
+  else if (kind === 'seoul') { ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(0, g); ctx.quadraticCurveTo(W * 0.5, g - 150, W, g); ctx.closePath(); ctx.fill(); }
+  else if (kind === 'barcelona') tileRow(s, 112, (x, i, seed) => { const h = 90 + (seed % 3) * 14; ctx.fillStyle = far; ctx.fillRect(x, g - h, 104, h); });
+  else if (kind === 'sydney') {
+    tileRow(s, 104, (x, i, seed) => { const h = 66 + (seed % 3) * 22; ctx.fillStyle = far; ctx.fillRect(x, g - h, 96, h); });
     ctx.strokeStyle = 'rgba(120,200,255,0.22)'; ctx.lineWidth = 2;
-    for (let k = 0; k < 7; k++) { const wx = ((k * 170 - (dist * 8) % 170) % (W + 170)) - 40; ctx.beginPath(); ctx.moveTo(wx, g - 8 + (k % 2) * 3); ctx.lineTo(wx + 70, g - 8 + (k % 2) * 3); ctx.stroke(); }
+    for (let k = 0; k < 7; k++) { const wx = ((k * 170 - (dist * 26) % 170) % (W + 170)) - 40; ctx.beginPath(); ctx.moveTo(wx, g - 8 + (k % 2) * 3); ctx.lineTo(wx + 70, g - 8 + (k % 2) * 3); ctx.stroke(); }
   }
+}
 
-  if (kind === 'sydney') { bigLandmark(kind, dist, T); drawGulls(dist); }
+// 근경 건물 (가장 앞 — 랜드마크와 같은 속도로 흘러 함께 뒤로 밀려간다)
+function cityNear(kind, dist, T, near, far, g) {
+  const s = dist * 0.85;
+  if (kind === 'paris') tileRow(s, 108, (x, i, seed) => {
+    const bh = 148 + (seed % 2) * 16;
+    ctx.fillStyle = near; ctx.fillRect(x, g - bh, 100, bh);
+    ctx.fillStyle = far;
+    ctx.beginPath(); ctx.moveTo(x - 4, g - bh); ctx.lineTo(x + 104, g - bh); ctx.lineTo(x + 94, g - bh - 24); ctx.lineTo(x + 6, g - bh - 24); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,225,150,0.45)';
+    for (let k = 0; k < 3; k++) ctx.fillRect(x + 22 + k * 26, g - bh - 19, 8, 9);
+    winGrid(x + 8, g - 16, g - bh + 14, 84, 3, seed);
+    ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 2;
+    for (let r = 1; r < 4; r++) { const yy = g - bh + 14 + r * 32; ctx.beginPath(); ctx.moveTo(x + 10, yy); ctx.lineTo(x + 90, yy); ctx.stroke(); }
+    ctx.fillStyle = far; ctx.fillRect(x + 72, g - bh - 40, 6, 16); ctx.fillRect(x + 82, g - bh - 44, 6, 20);
+  });
+  else if (kind === 'nyc' || kind === 'shanghai' || kind === 'tokyo') tileRow(s, 98, (x, i, seed) => {
+    const bh = 150 + (seed % 5) * 46;
+    ctx.fillStyle = near; ctx.fillRect(x, g - bh, 90, bh);
+    if (kind === 'nyc' && seed % 3 === 0) { ctx.fillStyle = far; ctx.fillRect(x + 22, g - bh - 22, 20, 22); ctx.beginPath(); ctx.moveTo(x + 20, g - bh - 22); ctx.lineTo(x + 44, g - bh - 22); ctx.lineTo(x + 32, g - bh - 34); ctx.closePath(); ctx.fill(); }
+    winGrid(x + 6, g - 16, g - bh + 12, 78, 4, seed, kind === 'shanghai' ? 'rgba(140,220,255,0.5)' : undefined);
+    if (kind === 'tokyo' && seed % 3 === 0) {
+      const nc = T.neon[seed % T.neon.length];
+      ctx.fillStyle = nc; ctx.globalAlpha = 0.7 + 0.3 * Math.sin(globalT * 5 + seed);
+      rr(x + 14, g - bh - 24, 62, 18, 4); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = '#0a0a1a'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+      const sg = cityData().signs; ctx.fillText(sg[seed % sg.length], x + 45, g - bh - 11);
+    }
+  });
+  else if (kind === 'london') tileRow(s, 102, (x, i, seed) => {
+    const bh = 126 + (seed % 2) * 22;
+    ctx.fillStyle = near; ctx.fillRect(x, g - bh, 94, bh);
+    ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
+    for (let r = 1; r < 5; r++) { const yy = g - bh + r * 24; ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + 94, yy); ctx.stroke(); }
+    winGrid(x + 8, g - 14, g - bh + 12, 78, 3, seed);
+    ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(x - 2, g - bh); ctx.lineTo(x + 96, g - bh); ctx.lineTo(x + 82, g - bh - 16); ctx.lineTo(x + 12, g - bh - 16); ctx.closePath(); ctx.fill();
+  });
+  else if (kind === 'seoul') tileRow(s, 76, (x, i, seed) => {
+    const bh = 120 + (seed % 4) * 42;
+    ctx.fillStyle = near; ctx.fillRect(x, g - bh, 66, bh);
+    winGrid(x + 6, g - 14, g - bh + 12, 54, 3, seed, 'rgba(255,225,150,0.45)');
+    ctx.fillStyle = `rgba(255,90,90,${0.4 + 0.3 * Math.sin(globalT * 4 + seed)})`; ctx.fillRect(x + 30, g - bh - 6, 4, 6);
+  });
+  else if (kind === 'barcelona') tileRow(s, 104, (x, i, seed) => {
+    const bh = 132 + (seed % 2) * 16;
+    ctx.fillStyle = near; ctx.fillRect(x, g - bh, 96, bh);
+    winGrid(x + 8, g - 14, g - bh + 12, 80, 3, seed);
+    ctx.fillStyle = far; ctx.beginPath(); ctx.moveTo(x - 2, g - bh);
+    for (let k = 0; k <= 4; k++) ctx.quadraticCurveTo(x + k * 24 + 12, g - bh - 13, x + k * 24 + 24, g - bh);
+    ctx.lineTo(x + 96, g - bh); ctx.closePath(); ctx.fill();
+  });
+  // sydney: 근경 건물 없음 (하버브릿지가 랜드마크)
 }
 
 // 큰 랜드마크 — 뒤 건물들과 같은 속도(원경 패럴랙스)로 흐르고, 주기적으로 다시 등장한다.
 // 근경 건물들이 앞을 가리도록 drawCityScape 맨 앞에서 호출된다.
 function bigLandmark(kind, dist, T) {
   const g = GY();
-  const scroll = dist * 0.22;                    // 원경(뒤 건물) 레이어와 동일 속도
-  const col = lighten(T.far, 0.14);              // 뒤 건물보다 살짝 밝게, 근경보다 어둡게 → 배경에 녹아듦
+  const scroll = dist * 0.85;                     // 근경 건물과 동일 속도 → 세계에 고정된 듯 함께 뒤로 흐른다
+  const col = lighten(T.far, 0.16);              // 뒤 건물보다 살짝 밝게, 근경보다 어둡게 → 배경에 녹아듦
   const light = T.neon[2] || '#ffd166', light2 = T.neon[0] || '#ff6fa5';
-  const period = W * 3.4;
+  const period = W * 2.2;                         // 조금 달리면 다시 오른쪽에서 등장
   const sx = W + 380 - ((((scroll + W * 0.4) % period) + period) % period);
   if (sx < -420 || sx > W + 420) return;
   if (kind === 'sydney') { drawSydney(sx, T, col, light); return; }
@@ -1630,13 +1639,33 @@ function drawSydney(sx, T, col, light) {
     ctx.beginPath(); ctx.moveTo(hx, Math.min(ay, deckY)); ctx.lineTo(hx, deckY); ctx.stroke();
   }
   ctx.fillStyle = light; ctx.beginPath(); ctx.arc(lx + 1, deckY - 66, 2, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.arc(rx - 1, deckY - 66, 2, 0, TAU); ctx.fill();
-  // 오페라하우스 (다리 오른쪽 발치 앞)
+  // 오페라하우스 — 겹겹이 솟은 흰 조개 지붕 (더 크고 디테일하게)
   ctx.save();
-  ctx.translate(rx - 40, g - 20);
-  const sail = (x, w, h, f, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(x, 0); ctx.quadraticCurveTo(x + w * f, -h, x + w, 0); ctx.closePath(); ctx.fill(); };
-  const white = 'rgba(236,244,255,0.92)', shade = 'rgba(198,214,236,0.9)';
-  sail(-70, 46, 60, 0.2, shade); sail(-52, 52, 88, 0.22, white);
-  sail(-20, 46, 66, 0.25, shade); sail(6, 50, 84, 0.75, white); sail(40, 44, 58, 0.8, shade);
+  ctx.translate(cx + span * 0.14, g - 14);
+  // 포디움(받침대)
+  ctx.fillStyle = 'rgba(70,86,116,0.7)';
+  ctx.beginPath(); ctx.moveTo(-120, 0); ctx.lineTo(98, 0); ctx.lineTo(86, 15); ctx.lineTo(-108, 15); ctx.closePath(); ctx.fill();
+  // 조개 쉘: 뾰족하게 솟아 한쪽으로 기운 흰 지붕 + 살(rib)
+  const shell = (bx, h, w, dir, c) => {
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(bx - dir * w * 0.5, 0);
+    ctx.quadraticCurveTo(bx - dir * w * 0.26, -h, bx + dir * w * 0.16, -h);       // 등 → 뾰족한 꼭대기
+    ctx.quadraticCurveTo(bx + dir * w * 0.56, -h * 0.48, bx + dir * w * 0.5, 0);  // 앞면 곡선 하강
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,140,175,0.5)'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(bx + dir * w * 0.16, -h); ctx.quadraticCurveTo(bx + dir * w * 0.3, -h * 0.45, bx + dir * w * 0.4, 0); ctx.stroke();
+  };
+  const white = 'rgba(240,246,255,0.96)', shade = 'rgba(205,219,240,0.94)';
+  // 큰 클러스터 (뒤→앞으로 점점 크게, 오른쪽으로 기움)
+  shell(-88, 62, 56, 1, shade);
+  shell(-64, 98, 64, 1, white);
+  shell(-34, 126, 72, 1, shade);
+  shell(-4, 100, 60, 1, white);
+  // 작은 클러스터 (레스토랑 쪽)
+  shell(36, 80, 52, 1, shade);
+  shell(60, 58, 44, 1, white);
+  shell(82, 42, 34, -1, shade);   // 반대로 기운 작은 쉘
   ctx.restore();
 }
 
@@ -2468,11 +2497,11 @@ function drawStageUp() {
   ctx.save();
   ctx.globalAlpha = a;
   // 리본 배경
-  ctx.fillStyle = 'rgba(10,12,30,0.55)';
-  ctx.fillRect(0, cy - 70 + slide, W, 140);
+  ctx.fillStyle = 'rgba(10,12,30,0.6)';
+  ctx.fillRect(0, cy - 70 + slide, W, 172);
   ctx.fillStyle = 'rgba(255,209,102,0.9)';
   ctx.fillRect(0, cy - 70 + slide, W, 4);
-  ctx.fillRect(0, cy + 66 + slide, W, 4);
+  ctx.fillRect(0, cy + 98 + slide, W, 4);
   ctx.textAlign = 'center';
   // 회수한 3종 아이콘 반짝
   ctx.font = '22px sans-serif';
@@ -2502,6 +2531,13 @@ function drawStageUp() {
   rr(bx, byy, bw, 10, 5); ctx.fill();
   ctx.fillStyle = '#7bffc8';
   rr(bx, byy, bw * clamp(el / 1.1, 0, 1), 10, 5); ctx.fill();
+  // 스토리 한 줄 (구역 넘어갈 때 서사)
+  if (run.stageUpStory) {
+    ctx.globalAlpha = a * clamp((el - 0.3) / 0.4, 0, 1);
+    ctx.fillStyle = '#cfe0ff';
+    fitFont(run.stageUpStory, W * 0.86, 15, 'italic 600');
+    ctx.fillText(run.stageUpStory, W / 2, cy + 76 + slide);
+  }
   ctx.restore();
 }
 
