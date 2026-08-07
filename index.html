@@ -26,6 +26,8 @@
 </style>
 </head>
 <body>
+<!-- 안전영역(노치·상태바·제스처바) 크기를 JS에서 읽기 위한 보이지 않는 측정용 요소 -->
+<div id="safe" style="position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);"></div>
 <canvas id="game"></canvas>
 <script src="i18n.js"></script>
 <script src="game.js"></script>

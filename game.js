@@ -12,6 +12,10 @@
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let DPR = 1, SCALE = 1, W = 960, H = 540;
+// 기기 안전영역(노치·상태바·홈바·제스처바)을 게임 좌표(가상단위)로 환산해 보관.
+// 이 값만큼 상단/하단/좌우의 버튼·HUD를 안쪽으로 밀어, 시스템 UI에 가려 눌리지 않게 한다.
+let SAFE_T = 0, SAFE_B = 0, SAFE_L = 0, SAFE_R = 0;
+const _safeEl = document.getElementById('safe');
 
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -27,6 +31,21 @@ function resize() {
     SCALE = canvas.width / 540;
     W = 540; H = canvas.height / SCALE;
   }
+  // 안전영역(CSS px)을 가상단위로 변환 (k = 가상단위/CSS px, 세로·가로 동일 비율)
+  const k = vh ? H / vh : 1;
+  let it = 0, ir = 0, ib = 0, il = 0;
+  if (_safeEl) {
+    const cs = getComputedStyle(_safeEl);
+    it = parseFloat(cs.paddingTop) || 0;
+    ir = parseFloat(cs.paddingRight) || 0;
+    ib = parseFloat(cs.paddingBottom) || 0;
+    il = parseFloat(cs.paddingLeft) || 0;
+  }
+  SAFE_T = it * k;
+  SAFE_R = ir * k;
+  // 하단 제스처바/홈바: 인셋이 보고되면 그대로, 아니면 살짝만 여백을 둬 버튼이 화면 맨 끝에 붙지 않게 한다.
+  SAFE_B = Math.max(ib * k, 10);
+  SAFE_L = il * k;
 }
 window.addEventListener('resize', resize);
 resize();
@@ -116,7 +135,7 @@ const Sound = {
   // 내 음악(custom) 후보 파일들 — 있는 것만 자동으로 골라 레벨마다 랜덤 재생.
   // (bgm1.mp3 ~ bgm8.mp3 중 올린 것 + 단일 bgm.mp3 도 지원)
   trackUrls: ['bgm1.mp3', 'bgm2.mp3', 'bgm3.mp3', 'bgm4.mp3', 'bgm5.mp3', 'bgm6.mp3', 'bgm7.mp3', 'bgm8.mp3', 'bgm.mp3'],
-  candidates: null, cur: null, curUrl: null,
+  candidates: null, cur: null, curUrl: null, pendingSwitch: false,
   init() {
     if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); this.applyBgm(); return; }
     try {
@@ -153,12 +172,19 @@ const Sound = {
     if (this.cur) { try { this.cur.pause(); } catch (e) {} }
     let el;
     try { el = new Audio(url); } catch (e) { save.bgmMode = 'retro'; return; }
-    el.loop = true; el.volume = 0.5;
+    el.loop = true; el.volume = 0.5;   // 기본은 이음새 없이 반복 (레벨업 대기 중엔 loop=false로 바꿔 한 바퀴 끝에 교체)
+    this.pendingSwitch = false;
     el.addEventListener('error', () => {           // 이 파일 없음 → 후보에서 빼고 다른 곡, 다 없으면 레트로
       this.candidates = (this.candidates || []).filter(u => u !== url);
       if (this.cur === el) this.cur = null;
       if (this.candidates.length) this.playCustom(this.pickTrack());
       else { save.bgmMode = 'retro'; persist(); }
+    });
+    el.addEventListener('ended', () => {           // loop=false로 바뀐 뒤 한 바퀴(=1 loop)가 끝나면 다음 곡으로
+      if (this.cur !== el) return;                 // 이미 다른 곡으로 교체됐으면 무시
+      this.pendingSwitch = false;
+      if (this.candidates && this.candidates.length) this.playCustom(this.pickTrack());
+      else { try { el.loop = true; el.currentTime = 0; el.play().catch(() => {}); } catch (e) {} }
     });
     this.cur = el; this.curUrl = url;
     if (!save.muted) el.play().catch(() => {});
@@ -170,11 +196,20 @@ const Sound = {
     if (playing && this.cur.paused) this.cur.play().catch(() => {});
     else if (!playing && !this.cur.paused) this.cur.pause();
   },
-  // 레벨(스테이지)이 바뀔 때마다 새 곡으로 교체
-  nextTrack() {
+  // 레벨(스테이지)이 바뀔 때 새 곡으로 교체.
+  // 기본: 현재 곡이 최소 1 loop을 마친 뒤에 교체(대기).
+  // 예외: 보스전(=클라이맥스) 진입 또는 force일 땐 1 loop 안 돌아도 즉시 랜덤 교체.
+  nextTrack(force) {
     if (save.bgmMode !== 'custom') return;
     if (!this.candidates) this.candidates = this.trackUrls.slice();
-    if (this.candidates.length) this.playCustom(this.pickTrack());
+    if (!this.candidates.length) return;
+    const bossClimax = (typeof run === 'object' && run) && (run.boss || (run.stage > 0 && run.stage % 3 === 0));
+    if (force || bossClimax || !this.cur) {
+      this.playCustom(this.pickTrack());           // 즉시 교체 (playCustom이 pendingSwitch 리셋)
+    } else {
+      this.pendingSwitch = true;                   // 현재 곡이 1 loop을 마치면 그때 교체
+      try { this.cur.loop = false; } catch (e) {}
+    }
   },
   applyBgm() {
     if (save.bgmMode === 'custom') {
@@ -343,7 +378,7 @@ function startGame() {
     spinT: 0, slide: 0,               // 빙판: 빙글빙글 도는 시간 / 앞으로 밀리는 오프셋
     hearts: maxHearts, maxHearts,
   };
-  Sound.nextTrack();   // 판 시작 시 내 음악(custom) 랜덤 선곡
+  Sound.nextTrack(true);   // 판 시작 시 내 음악(custom) 즉시 랜덤 선곡
   state = 'play';
 }
 
@@ -836,7 +871,7 @@ function catchThief(method) {
     Sound.sfx('clear');
     // 레벨업(다음 구역 진입) 시각 연출 트리거 + 잠깐의 가속(곧 가라앉음)
     run.stageUpT = 2.4;
-    run.speedBurst = 120;
+    run.speedBurst = 34;   // 레벨업 순간의 '급발진' 완화 — 살짝 탄력만 주고 곧 가라앉는다
     run.stageUpStage = run.stage + 1;   // 표시용(1-based)
     run.stageUpTheme = run.theme;
     run.stageUpStory = (L.storyBeats && L.storyBeats.length) ? L.storyBeats[(run.stage - 1) % L.storyBeats.length] : '';
@@ -1012,7 +1047,9 @@ function updatePlay(dt0) {
   const warm = clamp(run.t / 48, 0, 1);
   const ramp = 55 + 175 * warm;                     // 시작 +55 (살짝 빠르게), 최대 +230
   const wave = Math.sin(run.t / 15 * TAU) * 52;     // 쉬어가는/조여드는 리듬
-  const stageAdj = run.stage * 22;
+  // 스테이지 가산 속도는 '무한 루프'가 가능하도록 상한(약 +160)에 수렴하는 완만한 곡선.
+  // 초반엔 스테이지마다 조금씩 오르지만 뒤로 갈수록 증가폭이 줄어 일정 속도로 안착한다.
+  const stageAdj = 160 * (1 - Math.pow(0.82, run.stage));
   const target = (baseSpeed() + ramp + wave + run.speedBurst + stageAdj) * diffMod() * (P.boostT > 0 ? 1.4 : 1);
   // 또렷하게 목표를 따라가 미끄러짐 없이, 리듬 변화는 부드럽게 체감
   run.speed = lerp(run.speed, target, 1 - Math.pow(0.035, dt));
@@ -2144,6 +2181,9 @@ function button(x, y, w, h, label, cb, opt) {
 
 function drawHUD() {
   const pad = 14;
+  // 상단 HUD(하트·점수·아이템 등 텍스트)는 노치/상태바를 피해 안전영역만큼 아래·안쪽으로.
+  ctx.save();
+  ctx.translate(SAFE_L, SAFE_T);
   // 하트 (축적 가능 — 최대 6칸까지 아이콘, 그 이상은 ×N 로 표기)
   const heartCap = 6;
   const slots = Math.min(Math.max(P.maxHearts, P.hearts), heartCap);
@@ -2179,12 +2219,8 @@ function drawHUD() {
     ctx.fillStyle = run.feverT > 0 ? '#ffe066' : '#ffd166';
     ctx.fillText(`${run.combo} COMBO${mult > 1 ? `  x${mult}` : ''}`, W / 2, 74);
   }
-  // 피버 표시 (은은한 골드 테두리 + FEVER 펄스)
+  // 피버 표시 (FEVER 펄스 라벨 — 테두리는 아래에서 전체화면으로 따로 그린다)
   if (run.feverT > 0) {
-    const a = 0.25 + 0.15 * Math.sin(globalT * 8);
-    ctx.strokeStyle = `rgba(255,224,102,${a})`;
-    ctx.lineWidth = 10;
-    ctx.strokeRect(5, 5, W - 10, H - 10);
     const pulse = 1 + Math.sin(globalT * 9) * 0.1;
     ctx.save();
     ctx.translate(W / 2, 104);
@@ -2246,22 +2282,33 @@ function drawHUD() {
     barY += 24;
   }
 
-  // 사운드 켬/끔 버튼 (게임 중 바로 토글) + 일시정지 버튼
-  button(W - 108, pad, 44, 44, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: 'rgba(255,255,255,0.14)', size: 18 });
-  button(W - 58, pad, 44, 44, '⏸', () => { recordBest(); state = 'pause'; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
+  ctx.restore();   // 상단 안전영역 translate 종료
 
-  // 조작 힌트
+  // 피버 테두리는 화면 전체 기준으로 (안전영역 translate 밖에서) 그린다
+  if (run.feverT > 0) {
+    const a = 0.25 + 0.15 * Math.sin(globalT * 8);
+    ctx.strokeStyle = `rgba(255,224,102,${a})`;
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, W - 10, H - 10);
+  }
+
+  // 사운드 켬/끔 버튼 (게임 중 바로 토글) + 일시정지 버튼 — 노치/상태바 피해 안쪽으로
+  button(W - 108 - SAFE_R, pad + SAFE_T, 44, 44, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: 'rgba(255,255,255,0.14)', size: 18 });
+  button(W - 58 - SAFE_R, pad + SAFE_T, 44, 44, '⏸', () => { recordBest(); state = 'pause'; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
+
+  // 조작 힌트 (하단 제스처바 위로)
   if (run.hintT > 0) {
+    const hy = H - SAFE_B;
     ctx.globalAlpha = clamp(run.hintT, 0, 1) * 0.9;
     ctx.fillStyle = '#0b0d24';
-    rr(W * 0.06, H - 64, W * 0.36, 44, 12); ctx.fill();
-    rr(W * 0.58, H - 64, W * 0.36, 44, 12); ctx.fill();
+    rr(W * 0.06, hy - 64, W * 0.36, 44, 12); ctx.fill();
+    rr(W * 0.58, hy - 64, W * 0.36, 44, 12); ctx.fill();
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     fitFont(T('hintJump'), W * 0.33, W < 700 ? 14 : 17);
-    ctx.fillText(T('hintJump'), W * 0.24, H - 36);
+    ctx.fillText(T('hintJump'), W * 0.24, hy - 36);
     fitFont(T('hintPunch'), W * 0.33, W < 700 ? 14 : 17);
-    ctx.fillText(T('hintPunch'), W * 0.76, H - 36);
+    ctx.fillText(T('hintPunch'), W * 0.76, hy - 36);
     ctx.globalAlpha = 1;
   }
 
@@ -2608,8 +2655,10 @@ function drawMenu() {
 
   const bw = Math.min(320, W * 0.72);
   const bx = W / 2 - bw / 2;
+  const menuStackH = heldRun ? 244 : 186;   // 버튼 묶음 총 높이 (하단 안전영역 확보용)
   let by = H * 0.52;
   if (H >= 700) by = Math.max(by, ty + 240);
+  by = Math.min(by, H - SAFE_B - 12 - menuStackH);   // 하단 제스처바에 가리지 않게
   if (heldRun) {
     button(bx, by, bw, 62, T('btnResumeRun'), () => { resumeHeld(); }, { size: 22, color: '#e8a03c' });
     by += 74;
@@ -2661,7 +2710,8 @@ function drawLangSelect() {
     }, { color: active ? '#ff5c8a' : '#2a2d45', size: 19 });
   });
   if (!langFirstBoot) {
-    button(W / 2 - 90, startY + rows * (bh + 12) + 12, 180, 46, T('back'), () => { state = 'menu'; }, { color: '#4a55c9', size: 17 });
+    const backY = Math.min(startY + rows * (bh + 12) + 12, H - SAFE_B - 46 - 10);
+    button(W / 2 - 90, backY, 180, 46, T('back'), () => { state = 'menu'; }, { color: '#4a55c9', size: 17 });
   }
 }
 
@@ -2671,15 +2721,15 @@ function drawShop() {
   ctx.textAlign = 'center';
   fitFont(T('btnShop'), W * 0.9, 34, '900');
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(T('btnShop'), W / 2, 56);
+  ctx.fillText(T('btnShop'), W / 2, 56 + SAFE_T);
   ctx.font = 'bold 20px sans-serif';
   ctx.fillStyle = '#ffd166';
-  ctx.fillText(T('bank', save.bank.toLocaleString()), W / 2, 90);
+  ctx.fillText(T('bank', save.bank.toLocaleString()), W / 2, 90 + SAFE_T);
 
   const rw = Math.min(560, W * 0.92);
   const rx = W / 2 - rw / 2;
-  let ry = 116;
-  const rh = Math.min(86, (H - 210) / 4 - 8);
+  let ry = 116 + SAFE_T;
+  const rh = Math.min(86, (H - 210 - SAFE_T - SAFE_B) / 4 - 8);
   for (const item of SHOP) {
     const lvl = save.up[item.key];
     const maxed = lvl >= item.max;
@@ -2715,7 +2765,7 @@ function drawShop() {
       { color: canBuy ? '#ff5c8a' : undefined, disabled: !canBuy && !maxed || maxed, size: 16 });
     ry += rh + 10;
   }
-  button(W / 2 - 90, H - 66, 180, 50, T('back'), () => { state = 'menu'; }, { color: '#4a55c9' });
+  button(W / 2 - 90, H - SAFE_B - 66, 180, 50, T('back'), () => { state = 'menu'; }, { color: '#4a55c9' });
 }
 
 /* ---------------- 일시정지 / 게임오버 ---------------- */
@@ -2810,7 +2860,9 @@ function drawOver() {
   }
 
   const bw = Math.min(300, W * 0.7);
-  let by = H * 0.6;
+  // 버튼 묶음이 하단 제스처바에 가리지 않도록 시작 y를 위로 당긴다.
+  const stackH = (canRevive() ? 66 : 0) + 66 + 48;
+  let by = Math.min(H * 0.6, H - SAFE_B - 12 - stackH);
   // ❤️ 이어하기 (판당 1회): 광고 브리지가 있으면 무료(광고), 없으면 코인 소모
   if (canRevive()) {
     if (Ads.ready()) {
@@ -2845,7 +2897,7 @@ function introTap() {
 }
 
 function capBox(text, sub) {
-  const y = H - 92;
+  const y = H - SAFE_B - 92;
   ctx.fillStyle = 'rgba(4,5,16,0.85)';
   rr(W * 0.06, y, W * 0.88, 64, 12); ctx.fill();
   ctx.strokeStyle = 'rgba(255,209,102,0.4)';
@@ -3079,9 +3131,9 @@ function drawIntro(dt) {
   ctx.textAlign = 'center';
   for (let i = 0; i < CUT.length; i++) {
     ctx.fillStyle = i === cut.i ? '#ffd166' : 'rgba(255,255,255,0.3)';
-    ctx.beginPath(); ctx.arc(W / 2 - (CUT.length - 1) * 9 + i * 18, 22, 4, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(W / 2 - (CUT.length - 1) * 9 + i * 18, 22 + SAFE_T, 4, 0, TAU); ctx.fill();
   }
-  button(W - 122, 14, 108, 40, T('skip'), () => finishIntro(), { color: 'rgba(255,255,255,0.15)', size: 15 });
+  button(W - 122 - SAFE_R, 14 + SAFE_T, 108, 40, T('skip'), () => finishIntro(), { color: 'rgba(255,255,255,0.15)', size: 15 });
 }
 
 /* ---------------- 메인 루프 ---------------- */
