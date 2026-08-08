@@ -12,6 +12,9 @@
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let DPR = 1, SCALE = 1, W = 960, H = 540;
+// 화면/글자 확대 배율(홈 화면의 돋보기 슬라이더로 조절). 클수록 캐릭터·글자·버튼이 크게 보인다.
+// 기준 해상도(540)를 이 값으로 나눠 화면을 확대(줌인)하는 방식 — 모든 요소가 함께 커진다.
+let UISCALE = 1;
 // 기기 안전영역(노치·상태바·홈바·제스처바)을 게임 좌표(가상단위)로 환산해 보관.
 // 이 값만큼 상단/하단/좌우의 버튼·HUD를 안쪽으로 밀어, 시스템 UI에 가려 눌리지 않게 한다.
 let SAFE_T = 0, SAFE_B = 0, SAFE_L = 0, SAFE_R = 0;
@@ -24,12 +27,13 @@ function resize() {
   canvas.height = Math.round(vh * DPR);
   canvas.style.width = vw + 'px';
   canvas.style.height = vh + 'px';
-  if (vw >= vh) {           // 가로: 세로 540 기준
-    SCALE = canvas.height / 540;
-    H = 540; W = canvas.width / SCALE;
-  } else {                  // 세로: 가로 540 기준
-    SCALE = canvas.width / 540;
-    W = 540; H = canvas.height / SCALE;
+  const REF = 540 / (UISCALE || 1);   // 배율이 클수록 기준폭이 작아져 화면이 확대된다
+  if (vw >= vh) {           // 가로: 세로 REF 기준
+    SCALE = canvas.height / REF;
+    H = REF; W = canvas.width / SCALE;
+  } else {                  // 세로: 가로 REF 기준
+    SCALE = canvas.width / REF;
+    W = REF; H = canvas.height / SCALE;
   }
   // 안전영역(CSS px)을 가상단위로 변환 (k = 가상단위/CSS px, 세로·가로 동일 비율)
   const k = vh ? H / vh : 1;
@@ -81,12 +85,25 @@ const save = {
   skill: 0, failStreak: 0,           // 보이지 않는 동적 난이도(DDA) 지표
   missions: null,                    // 일일 미션 {date, list}
   streakDay: '', streakCount: 0,     // 연속 출석
+  uiScale: 1.15,                     // 화면/글자 확대 배율 (홈 화면 돋보기 슬라이더)
 };
 try {
   const raw = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
   Object.assign(save, raw);
   save.up = Object.assign({ shoe: 0, magnet: 0, shield: 0, heart: 0 }, raw.up || {});
 } catch (e) {}
+// 저장된 배율을 적용해 다시 한 번 화면 크기 계산 (최초 resize는 save 로드 전이라 기본값이었음)
+UISCALE = clampScale(save.uiScale);
+save.uiScale = UISCALE;
+resize();
+function clampScale(v) { v = +v || 1; return Math.max(1, Math.min(1.5, v)); }
+// 홈 화면 돋보기 슬라이더로 호출: 배율 변경 → 저장 → 화면 즉시 재계산
+function applyUiScale(v) {
+  UISCALE = clampScale(v);
+  save.uiScale = UISCALE;
+  persist();
+  resize();
+}
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
 
 /* ---------------- 다국어 ---------------- */
@@ -871,7 +888,7 @@ function catchThief(method) {
     Sound.sfx('clear');
     // 레벨업(다음 구역 진입) 시각 연출 트리거 + 잠깐의 가속(곧 가라앉음)
     run.stageUpT = 2.4;
-    run.speedBurst = 34;   // 레벨업 순간의 '급발진' 완화 — 살짝 탄력만 주고 곧 가라앉는다
+    run.speedBurst = 0;    // 레벨업만으로는 속도를 올리지 않는다 (가속은 두목전에서만)
     run.stageUpStage = run.stage + 1;   // 표시용(1-based)
     run.stageUpTheme = run.theme;
     run.stageUpStory = (L.storyBeats && L.storyBeats.length) ? L.storyBeats[(run.stage - 1) % L.storyBeats.length] : '';
@@ -1044,13 +1061,11 @@ function updatePlay(dt0) {
   // 느긋↔긴장 파도(약 15초 주기)로 중간중간 숨 돌릴 구간을 넣고,
   // 레벨업 순간엔 잠깐 빨라졌다가 다시 가라앉는다.
   run.speedBurst = Math.max(0, run.speedBurst - 42 * dt);
-  const warm = clamp(run.t / 48, 0, 1);
-  const ramp = 55 + 175 * warm;                     // 시작 +55 (살짝 빠르게), 최대 +230
-  const wave = Math.sin(run.t / 15 * TAU) * 52;     // 쉬어가는/조여드는 리듬
-  // 스테이지 가산 속도는 '무한 루프'가 가능하도록 상한(약 +160)에 수렴하는 완만한 곡선.
-  // 초반엔 스테이지마다 조금씩 오르지만 뒤로 갈수록 증가폭이 줄어 일정 속도로 안착한다.
-  const stageAdj = 160 * (1 - Math.pow(0.82, run.stage));
-  const target = (baseSpeed() + ramp + wave + run.speedBurst + stageAdj) * diffMod() * (P.boostT > 0 ? 1.4 : 1);
+  // 속도: '시작 레벨 속도'를 게임 내내 그대로 유지 — 진행/스테이지에 따른 가속 없음.
+  // 은은한 파도로 리듬만 주고, 두목전(접근·전투) 동안에만 아주 살짝 빨라진다.
+  const wave = Math.sin(run.t / 15 * TAU) * 22;      // 완만한 리듬 (±22)
+  const bossFast = (run.boss || run.bossPending > 0) ? 55 : 0;   // 두목전 = 사~알짝 가속
+  const target = (baseSpeed() + 55 + wave + bossFast + run.speedBurst) * (P.boostT > 0 ? 1.4 : 1);
   // 또렷하게 목표를 따라가 미끄러짐 없이, 리듬 변화는 부드럽게 체감
   run.speed = lerp(run.speed, target, 1 - Math.pow(0.035, dt));
   const sp = run.speed;
@@ -2588,12 +2603,38 @@ function drawStageUp() {
   ctx.restore();
 }
 
+/* 화면/글자 크기 돋보기 컨트롤 (홈 화면 우측 상단) — 위(▲) 크게 / 아래(▼) 작게 */
+function drawSizeControl() {
+  const cw = 46;
+  const cx = W - cw - 8 - SAFE_R;
+  let cyy = 8 + SAFE_T;
+  ctx.textAlign = 'center';
+  ctx.font = '20px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('🔍', cx + cw / 2, cyy + 20);
+  cyy += 28;
+  button(cx, cyy, cw, 34, '▲', () => applyUiScale(save.uiScale + 0.1), { color: '#2a2d45', size: 18 });
+  cyy += 40;
+  // 현재 배율 막대 (아래=작게, 위=크게)
+  const barH = 56;
+  ctx.fillStyle = 'rgba(255,255,255,0.16)';
+  rr(cx + cw / 2 - 6, cyy, 12, barH, 6); ctx.fill();
+  const lvl = clamp((save.uiScale - 1) / 0.5, 0, 1);
+  ctx.fillStyle = '#7bffc8';
+  rr(cx + cw / 2 - 6, cyy + barH * (1 - lvl), 12, barH * lvl, 6); ctx.fill();
+  cyy += barH + 6;
+  button(cx, cyy, cw, 34, '▼', () => applyUiScale(save.uiScale - 0.1), { color: '#2a2d45', size: 18 });
+}
+
 /* ---------------- 메뉴 ---------------- */
 function drawMenu() {
   drawBackground(0, globalT * 26, 0.25);
   // 달리는 주인공 데모
   drawHeroine(W * 0.2, GY(), { pose: 'run', phase: globalT * 13 });
   drawThief(W * 0.75, GY(), { phase: globalT * 13 + 1 });
+
+  // 🔍 화면/글자 크기 조절 (우측 상단, 위=크게 아래=작게) — 노치/제스처바 피해 배치
+  drawSizeControl();
 
   ctx.textAlign = 'center';
   const ty = H * 0.24;
