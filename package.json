@@ -1,0 +1,21 @@
+{
+  "name": "rushhour-chase",
+  "version": "1.0.0",
+  "private": true,
+  "description": "퇴근길 대추격전 (Rush Hour Chase) — HTML5 Canvas 추격 러너 게임",
+  "scripts": {
+    "build:native": "node scripts/build-native.mjs",
+    "sync:ios": "npm run build:native && npx cap sync ios",
+    "open:ios": "npx cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.6.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "typescript": "^5.9.3"
+  }
+}

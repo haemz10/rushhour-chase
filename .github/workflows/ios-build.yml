@@ -1,0 +1,44 @@
+name: iOS build check
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios/**'
+      - 'game.js'
+      - 'i18n.js'
+      - 'index.html'
+      - 'capacitor.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - '.github/workflows/ios-build.yml'
+
+jobs:
+  xcode-build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:native
+      - run: npx cap sync ios
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Build for iOS device (unsigned, Release)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 80
+      - name: Verify bundle
+        run: |
+          APP=build/Build/Products/Release-iphoneos/App.app
+          plutil -p "$APP/Info.plist" | grep -E 'UIDeviceFamily|ITSAppUsesNonExemptEncryption|UIStatusBarHidden|CFBundleIdentifier|UISupportedInterfaceOrientations' -A4
+          ls -la "$APP/public"
+          test -f "$APP/public/bgm1.m4a" && test -f "$APP/public/support.html"
+          test -f "$APP/Assets.car"
