@@ -73,7 +73,58 @@ function rr(x, y, w, h, r) { // rounded rect path
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
-function vibrate(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} }
+/* ---------------- 네이티브(Capacitor) 브리지 ----------------
+ * 번들러 없이 동작하도록 window.Capacitor 전역만 사용한다.
+ * 웹(GitHub Pages·브라우저)에서는 전부 null → 기존 웹 API로 fallback. */
+const _capCache = {};
+function isNative() {
+  try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }
+  catch (e) { return false; }
+}
+function capPlugin(name) {
+  if (name in _capCache) return _capCache[name];
+  let p = null;
+  try {
+    if (isNative()) {
+      const C = window.Capacitor;
+      p = (C.Plugins && C.Plugins[name]) || (C.registerPlugin ? C.registerPlugin(name) : null);
+    }
+  } catch (e) { p = null; }
+  _capCache[name] = p;
+  return p;
+}
+// 진동: iOS 앱에서는 @capacitor/haptics(Taptic Engine), 웹에서는 navigator.vibrate
+function vibrate(ms) {
+  const h = capPlugin('Haptics');
+  if (h) {
+    const style = ms <= 30 ? 'LIGHT' : (ms <= 80 ? 'MEDIUM' : 'HEAVY');
+    try { const r = h.impact({ style }); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return;
+  }
+  try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {}
+}
+// iOS 무음 스위치가 켜져 있어도 게임 사운드가 들리도록 오디오 세션을 '재생'으로 지정
+// (Safari 17+/WKWebView의 Audio Session API. 미지원 브라우저는 조용히 무시)
+function setPlaybackAudioSession() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+}
+setPlaybackAudioSession();
+// 개인정보처리방침·지원 페이지 (GitHub Pages에 호스팅, 앱 번들에도 포함)
+const SITE_BASE = 'https://haemz10.github.io/rushhour-chase/';
+const CONTACT_EMAIL = 'cloviradmin@gmail.com';
+function openInfoPage(page) {
+  const br = capPlugin('Browser');
+  if (br) {   // 앱: 인앱 Safari 시트(SFSafariViewController)로 열기 — 게임으로 바로 복귀 가능
+    try { const r = br.open({ url: SITE_BASE + page }); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return;
+  }
+  let url = page;
+  try { url = new URL(page, location.href).href; } catch (e) {}
+  if (isNative()) url = SITE_BASE + page;
+  // 'noopener' 기능 문자열은 항상 null을 반환하므로 쓰지 않고, 열린 창의 opener만 끊는다.
+  // (팝업이 차단돼도 게임 화면을 떠나지 않도록 페이지 이동 fallback은 두지 않음 — 정보 화면에 이메일이 표시됨)
+  try { const w = window.open(url, '_blank'); if (w) { try { w.opener = null; } catch (e) {} } } catch (e) {}
+}
 
 /* ---------------- Save Data ---------------- */
 const SAVE_KEY = 'rushhour_chase_v1';
@@ -81,7 +132,7 @@ const save = {
   best: 0, bestDist: 0, bank: 0, totalCatches: 0,
   up: { shoe: 0, magnet: 0, shield: 0, heart: 0 },
   muted: false, introSeen: false,
-  bgmMode: 'retro',                  // 'retro'(기본 합성 8비트) | 'custom'(내 음악 bgm.mp3)
+  bgmMode: 'retro',                  // 'retro'(기본 합성 8비트) | 'custom'(내 음악 bgm1~3.m4a)
   skill: 0, failStreak: 0,           // 보이지 않는 동적 난이도(DDA) 지표
   missions: null,                    // 일일 미션 {date, list}
   streakDay: '', streakCount: 0,     // 연속 출석
@@ -150,10 +201,11 @@ function fitFont(txt, maxW, size, weight) {
 const Sound = {
   ac: null, musicTimer: null, nextNoteTime: 0, step: 0,
   // 내 음악(custom) 후보 파일들 — 있는 것만 자동으로 골라 레벨마다 랜덤 재생.
-  // (bgm1.mp3 ~ bgm8.mp3 중 올린 것 + 단일 bgm.mp3 도 지원)
-  trackUrls: ['bgm1.mp3', 'bgm2.mp3', 'bgm3.mp3', 'bgm4.mp3', 'bgm5.mp3', 'bgm6.mp3', 'bgm7.mp3', 'bgm8.mp3', 'bgm.mp3'],
+  // iOS(WKWebView)·Safari 호환을 위해 순수 오디오 AAC(.m4a)만 사용한다.
+  trackUrls: ['bgm1.m4a', 'bgm2.m4a', 'bgm3.m4a'],
   candidates: null, cur: null, curUrl: null, pendingSwitch: false,
   init() {
+    setPlaybackAudioSession();
     if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); this.applyBgm(); return; }
     try {
       this.ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -1996,9 +2048,9 @@ function drawObstacle(o) {
       ctx.strokeRect(o.x - bw / 2 + 6, g - 36 * (i + 1) + 6, bw - 12, bh - 15);
     }
     ctx.fillStyle = '#5b3d1e';
-    ctx.font = 'bold 13px sans-serif';
+    fitFont(T('parcelLabel'), o.w - 10, 13);
     ctx.textAlign = 'center';
-    ctx.fillText('택배', o.x, g - 52);
+    ctx.fillText(T('parcelLabel'), o.x, g - 52);
   } else if (o.type === 'pit') {
     // 맨홀 구덩이
     ctx.fillStyle = '#04050f';
@@ -2711,8 +2763,8 @@ function drawMenu() {
   }
   button(bx, by, bw, 52, T('btnShop'), () => { state = 'shop'; }, { color: '#4a55c9' });
   by += 64;
-  // 설정 4버튼 한 줄 (스토리 · 사운드 · 배경음악 · 언어) — 항상 화면 안에 보이도록 통합
-  const bw4 = (bw - 24) / 4;
+  // 설정 5버튼 한 줄 (스토리 · 사운드 · 배경음악 · 언어 · 정보ⓘ) — 항상 화면 안에 보이도록 통합
+  const bw4 = (bw - 32) / 5;
   const gx = bw4 + 8;
   button(bx, by, bw4, 46, '📖', () => { startIntro(); }, { color: '#2a2d45', size: 20 });
   button(bx + gx, by, bw4, 46, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: '#2a2d45', size: 20 });
@@ -2723,6 +2775,35 @@ function drawMenu() {
   button(bx + gx * 3, by, bw4, 46, '🌐' + (save.lang || detectLang()).toUpperCase(), () => {
     state = 'lang';
   }, { color: '#2a2d45', size: 13 });
+  // ⓘ 정보: 개인정보처리방침 · 지원(문의) 페이지
+  button(bx + gx * 4, by, bw4, 46, 'ⓘ', () => { state = 'info'; }, { color: '#2a2d45', size: 22 });
+}
+
+/* ---------------- 정보 (개인정보처리방침 · 지원) ---------------- */
+function drawInfo() {
+  drawBackground(0, globalT * 16, 0.4);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  fitFont(T('infoTitle'), W * 0.9, 34, '900');
+  const top = Math.max(H * 0.2, SAFE_T + 56);
+  ctx.fillText(T('infoTitle'), W / 2, top);
+  ctx.fillStyle = '#aab0d8';
+  fitFont(T('title'), W * 0.9, 17);
+  ctx.fillText(T('title'), W / 2, top + 34);
+  const bw = Math.min(320, W * 0.8);
+  const bx = W / 2 - bw / 2;
+  let by = Math.min(top + 64, H - SAFE_B - 12 - 248);
+  button(bx, by, bw, 54, T('btnPrivacy'), () => { openInfoPage('privacypolicy.html'); }, { color: '#4a55c9', size: 19 });
+  by += 66;
+  button(bx, by, bw, 54, T('btnSupport'), () => { openInfoPage('support.html'); }, { color: '#4a55c9', size: 19 });
+  by += 78;
+  ctx.fillStyle = '#cfd6ff';
+  fitFont(T('infoContact', CONTACT_EMAIL), W * 0.9, 15, 'normal');
+  ctx.fillText(T('infoContact', CONTACT_EMAIL), W / 2, by);
+  ctx.fillStyle = '#7bffc8';
+  fitFont(T('infoNoData'), W * 0.9, 14, 'normal');
+  ctx.fillText(T('infoNoData'), W / 2, by + 24);
+  button(W / 2 - 90, by + 44, 180, 46, T('back'), () => { state = 'menu'; }, { color: '#2a2d45', size: 17 });
 }
 
 /* ---------------- 언어 선택 ---------------- */
@@ -3211,6 +3292,9 @@ function frame(now) {
       break;
     case 'shop':
       drawShop();
+      break;
+    case 'info':
+      drawInfo();
       break;
     case 'play':
       updatePlay(dt);

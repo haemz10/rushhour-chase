@@ -3,7 +3,7 @@
 > 밤 11시 30분, 야근을 마친 회사원 **수진**. 막차 지하철의 기분 좋은 흔들림에 깜빡 잠든 사이 —
 > **가방과 휴대폰이 사라졌다!** 도둑을 쫓아 도시의 밤을 달리는 추격 러너 액션 게임.
 
-의존성 0개, 순수 HTML5 Canvas + Web Audio로 만든 모바일 우선 게임입니다.
+게임 자체는 의존성 0개, 순수 HTML5 Canvas + Web Audio로 만든 모바일 우선 게임입니다.
 가로/세로 모드 모두 지원하며 오프라인(PWA)에서도 동작합니다.
 
 **🌐 6개 언어 지원** — 한국어 · English · 日本語 · 简体中文 · Español · Français.
@@ -34,7 +34,7 @@
 - **업그레이드 상점**: 모은 코인으로 러닝화(시작 속도), 자석/방패 지속시간, 최대 체력 영구 강화
 - **난이도 곡선**: 시간이 지날수록 속도·패턴 난이도 상승, 스테이지마다 배경 테마 순환
   (지하철 승강장 → 도심 네온거리 → 새벽 한강공원)
-- **사운드**: Web Audio 실시간 합성 8비트풍 BGM + 효과음 (외부 에셋 0개), 진동 피드백
+- **사운드**: Web Audio 실시간 합성 8비트풍 BGM + 효과음, 🎵 버튼으로 오리지널 BGM(`bgm1~3.m4a`) 전환, 햅틱 피드백
 - **저장**: 최고 점수·코인·업그레이드는 `localStorage`에 자동 저장
 
 ## 실행 방법
@@ -46,87 +46,53 @@ npx serve .        # 또는 python3 -m http.server 8080
 
 파일을 그냥 브라우저로 열어도(`index.html` 더블클릭) 플레이됩니다. (서비스워커만 비활성)
 
-## 앱스토어 / 플레이스토어 패키징 (Capacitor)
+## iOS 앱 (Capacitor 8, iPhone 전용)
 
-이 게임은 의존성 없는 정적 웹앱이라 [Capacitor](https://capacitorjs.com)로 그대로 네이티브 앱이 됩니다.
+루트의 웹 파일은 GitHub Pages용으로 그대로 두고, 앱에 필요한 에셋만 `www/`로 복사해 네이티브 앱을 만듭니다.
 
 ```bash
-mkdir rushhour-app && cd rushhour-app
-npm init -y
-npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android
-npx cap init "퇴근길 대추격전" "com.yourcompany.rushhourchase" --web-dir=www
-cp -r ../rushhour-chase/* www   # 게임 파일을 www/로 복사 (.git 제외)
-npx cap add ios            # Xcode 필요 (App Store)
-npx cap add android        # Android Studio 필요 (Play Store)
-npx cap sync
-npx cap open ios           # 서명/아이콘 설정 후 아카이브 → App Store Connect 업로드
-npx cap open android       # AAB 빌드 → Play Console 업로드
+npm install                 # Capacitor 8 + Haptics/Browser 플러그인
+npm run build:native        # 루트 → www/ (index·game·i18n·bgm1~3.m4a·정책/지원 페이지)
+npx cap sync ios            # www/ → ios/App/App/public, SPM 플러그인 갱신
+npx cap open ios            # Xcode에서 Signing Team 선택 → Product › Archive → App Store Connect 업로드
 ```
 
-스토어 제출 팁:
-- 아이콘: `icon.svg`를 1024×1024 PNG로 내보내 각 플랫폼 에셋으로 사용
-- iOS는 `Status Bar Hidden` + `UIRequiresFullScreen` 설정 권장
-- 진동은 Capacitor Haptics 플러그인으로 교체하면 iOS에서도 동작
+| 항목 | 설정 |
+|---|---|
+| Bundle ID / 이름 | `com.rushhourchase.app` / 퇴근길 대추격전 |
+| 기기 | iPhone 전용 (`TARGETED_DEVICE_FAMILY = 1`) |
+| 화면 방향 | 세로 · 가로(좌/우), 상하반전 제외 |
+| 상태바 | 숨김 (`UIStatusBarHidden` + SystemBars `hidden: true`), 홈 인디케이터 자동 숨김 |
+| 수출 규정 | `ITSAppUsesNonExemptEncryption = false` |
+| 사운드 | `AVAudioSession` `.playback` + `navigator.audioSession.type = 'playback'` → 무음 스위치에서도 재생 |
+| 진동 | `@capacitor/haptics` (웹에서는 `navigator.vibrate` fallback) |
+| 앱 아이콘 | `icon.svg` → 1024×1024 불투명 PNG (`node scripts/generate-app-icon.mjs`) |
+| 런치 스크린 | `#070818` 단색 |
 
-## 수익화: 보상형 광고로 무료 부활 (AdMob)
+앱 메뉴 하단의 **ⓘ** 버튼에서 [개인정보처리방침](privacypolicy.html)과 [지원 페이지](support.html)를 열 수 있습니다
+(앱에서는 인앱 Safari 시트, 웹에서는 새 탭). 문의: `cloviradmin@gmail.com`
 
-게임오버 화면의 "이어하기"는 이미 광고 연동 지점이 준비되어 있습니다.
-`window.AdBridge` 객체를 주입하면 코인 부활 버튼이 자동으로
-**"📺 광고 보고 무료 부활"** 버튼으로 바뀝니다.
+### 광고
 
-```js
-// AdBridge 규약 (게임이 기대하는 인터페이스)
-window.AdBridge = {
-  isRewardedReady: () => boolean,        // 보상형 광고 로드 완료 여부
-  showRewarded: (onReward) => void,      // 광고 표시, 끝까지 시청 시 onReward() 호출
-};
-```
-
-### AdMob 연동 절차 (Capacitor 앱)
-
-1. **AdMob 계정** — https://admob.google.com 가입 (Google 계정 + 수익 지급용 은행 계좌)
-2. **앱 등록** — AdMob 콘솔에서 앱 추가 → 앱 ID 발급 (`ca-app-pub-XXXX~YYYY`)
-3. **광고 단위 생성** — "보상형(Rewarded)" 광고 단위 → 광고 단위 ID 발급
-4. **플러그인 설치**
-   ```bash
-   npm install @capacitor-community/admob
-   npx cap sync
-   ```
-5. **브리지 구현** — 앱 시작 시 아래처럼 AdBridge를 주입:
-   ```js
-   import { AdMob, RewardAdPluginEvents } from '@capacitor-community/admob';
-   await AdMob.initialize();
-   let ready = false;
-   async function load() {
-     await AdMob.prepareRewardVideoAd({ adId: '광고단위ID' });
-     ready = true;
-   }
-   AdMob.addListener(RewardAdPluginEvents.Dismissed, load); // 다음 광고 미리 로드
-   load();
-   window.AdBridge = {
-     isRewardedReady: () => ready,
-     showRewarded: async (onReward) => {
-       ready = false;
-       const r = await AdMob.showRewardVideoAd();
-       if (r) onReward(); // 끝까지 시청한 경우에만 부활
-     },
-   };
-   ```
-6. **수익 지급** — 광고 시청이 쌓이면 AdMob 대시보드에 수익 표시 →
-   잔액 $100 도달 시 등록한 계좌로 월 단위 자동 지급
-
-웹 버전은 Google **AdSense for Games (H5 Games Ads)** 승인을 받으면
-같은 AdBridge 규약으로 `adBreak` API를 감싸 사용할 수 있습니다.
+현재 버전에는 광고 SDK가 **포함되어 있지 않으며** 개인정보를 수집하지 않습니다
+(App Store Connect 개인정보 라벨: "데이터를 수집하지 않음").
+게임 코드에는 `window.AdBridge`(`isRewardedReady()`, `showRewarded(onReward)`)가 주입될 때만 나타나는
+"광고 보고 부활" 연동 지점이 남아 있으므로, 향후 광고를 도입한다면 개인정보처리방침·개인정보 라벨·ATT 처리를 함께 갱신해야 합니다.
 
 ## 파일 구조
 
 ```
 rushhour-chase/
-├── index.html     # 엔트리 (뷰포트/PWA 메타)
-├── game.js        # 게임 전체 로직 (컷씬·러너·상점·사운드)
-├── i18n.js        # 6개 언어 문자열 (ko/en/ja/zh/es/fr)
-├── manifest.json  # PWA 매니페스트
-├── sw.js          # 오프라인 캐시 서비스워커
-├── icon.svg       # 앱 아이콘
-└── README.md
+├── index.html           # 엔트리 (뷰포트/PWA 메타)
+├── game.js              # 게임 전체 로직 (컷씬·러너·상점·사운드·네이티브 브리지)
+├── i18n.js              # 6개 언어 문자열 (ko/en/ja/zh/es/fr)
+├── bgm1~3.m4a           # 오리지널 BGM (AAC)
+├── privacypolicy.html   # 개인정보처리방침 (한/영)
+├── support.html         # 지원 페이지 (한/영)
+├── manifest.json        # PWA 매니페스트
+├── sw.js                # 오프라인 캐시 서비스워커 (웹 전용)
+├── icon.svg             # 앱 아이콘 원본
+├── capacitor.config.ts  # Capacitor 설정
+├── scripts/             # build-native.mjs, generate-app-icon.mjs
+└── ios/                 # Xcode 프로젝트 (Capacitor 8, SPM)
 ```

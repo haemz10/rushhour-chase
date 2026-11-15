@@ -99,6 +99,9 @@ const LANGS = {
     bossTrip: '💥 두목이 돌부리에 걸려 자빠졌다!',
     policeChance: '🚨 경찰 찬스 등장!', policeGo: '🚨 경찰 출동! 도둑 검거!',
     reviveAd: '📺 광고 보고 무료 부활',
+    parcelLabel: '택배',
+    infoTitle: 'ⓘ 정보', btnPrivacy: '🔒 개인정보처리방침', btnSupport: '💬 지원 · 문의',
+    infoContact: '문의: {0}', infoNoData: '광고 없음 · 개인정보 수집 없음',
   },
 
   /* ---------------- English ---------------- */
@@ -195,6 +198,9 @@ const LANGS = {
     bossTrip: '💥 The boss tripped on a rock!',
     policeChance: '🚨 Police backup!', policeGo: '🚨 Police to the rescue!',
     reviveAd: '📺 Watch an ad — revive free',
+    parcelLabel: 'PARCEL',
+    infoTitle: 'ⓘ Info', btnPrivacy: '🔒 Privacy Policy', btnSupport: '💬 Support',
+    infoContact: 'Contact: {0}', infoNoData: 'No ads · No data collected',
   },
 
   /* ---------------- 日本語 ---------------- */
@@ -291,6 +297,9 @@ const LANGS = {
     bossTrip: '💥 ボスが石につまずいて転んだ!',
     policeChance: '🚨 警察チャンス!', policeGo: '🚨 警察出動!泥棒逮捕!',
     reviveAd: '📺 広告を見て無料復活',
+    parcelLabel: '宅配',
+    infoTitle: 'ⓘ 情報', btnPrivacy: '🔒 プライバシーポリシー', btnSupport: '💬 サポート・お問い合わせ',
+    infoContact: 'お問い合わせ: {0}', infoNoData: '広告なし・個人情報の収集なし',
   },
 
   /* ---------------- 简体中文 ---------------- */
@@ -387,6 +396,9 @@ const LANGS = {
     bossTrip: '💥 头目被石头绊倒了!',
     policeChance: '🚨 警察支援!', policeGo: '🚨 警察出动!抓住小偷!',
     reviveAd: '📺 看广告免费复活',
+    parcelLabel: '快递',
+    infoTitle: 'ⓘ 信息', btnPrivacy: '🔒 隐私政策', btnSupport: '💬 支持与联系',
+    infoContact: '联系: {0}', infoNoData: '无广告 · 不收集任何数据',
   },
 
   /* ---------------- Español ---------------- */
@@ -483,6 +495,9 @@ const LANGS = {
     bossTrip: '💥 ¡El jefe tropezó con una piedra!',
     policeChance: '🚨 ¡Refuerzo policial!', policeGo: '🚨 ¡La policía al rescate!',
     reviveAd: '📺 Mira un anuncio: revive gratis',
+    parcelLabel: 'PAQUETE',
+    infoTitle: 'ⓘ Info', btnPrivacy: '🔒 Política de privacidad', btnSupport: '💬 Soporte',
+    infoContact: 'Contacto: {0}', infoNoData: 'Sin anuncios · Sin recopilación de datos',
   },
 
   /* ---------------- Français ---------------- */
@@ -579,6 +594,9 @@ const LANGS = {
     bossTrip: '💥 Le chef a trébuché sur un caillou !',
     policeChance: '🚨 Renfort police !', policeGo: '🚨 La police intervient !',
     reviveAd: '📺 Pub → résurrection gratuite',
+    parcelLabel: 'COLIS',
+    infoTitle: 'ⓘ Infos', btnPrivacy: '🔒 Politique de confidentialité', btnSupport: '💬 Assistance',
+    infoContact: 'Contact : {0}', infoNoData: 'Sans pub · Aucune donnée collectée',
   },
 };
 
