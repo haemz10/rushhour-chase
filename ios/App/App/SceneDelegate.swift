@@ -23,9 +23,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 }
 
-/// 게임 전용 브리지 뷰컨트롤러: 플레이 중 홈 인디케이터를 자동으로 숨기고,
-/// 하단 가장자리 스와이프가 실수로 앱을 닫지 않도록 시스템 제스처를 한 번 지연시킨다.
+/// 게임 전용 브리지 뷰컨트롤러: 하단 가장자리 스와이프가 실수로 앱을 닫지 않도록 시스템 제스처를 한 번 지연시킨다.
+/// (상태바·홈 인디케이터 숨김은 capacitor.config.ts의 SystemBars.hidden 설정이 담당)
 class GameBridgeViewController: CAPBridgeViewController {
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .bottom }
 }

@@ -62,7 +62,7 @@ npx cap open ios            # Xcode에서 Signing Team 선택 → Product › Ar
 | Bundle ID / 이름 | `com.rushhourchase.app` / 퇴근길 대추격전 |
 | 기기 | iPhone 전용 (`TARGETED_DEVICE_FAMILY = 1`) |
 | 화면 방향 | 세로 · 가로(좌/우), 상하반전 제외 |
-| 상태바 | 숨김 (`UIStatusBarHidden`), 홈 인디케이터 자동 숨김 |
+| 상태바 | 숨김 (`UIStatusBarHidden` + SystemBars `hidden: true`), 홈 인디케이터 자동 숨김 |
 | 수출 규정 | `ITSAppUsesNonExemptEncryption = false` |
 | 사운드 | `AVAudioSession` `.playback` + `navigator.audioSession.type = 'playback'` → 무음 스위치에서도 재생 |
 | 진동 | `@capacitor/haptics` (웹에서는 `navigator.vibrate` fallback) |
