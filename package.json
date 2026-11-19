@@ -1,6 +1,6 @@
 {
   "name": "rushhour-chase",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "퇴근길 대추격전 (Rush Hour Chase) — HTML5 Canvas 추격 러너 게임",
   "scripts": {

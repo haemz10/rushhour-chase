@@ -45,12 +45,23 @@ function resize() {
     ib = parseFloat(cs.paddingBottom) || 0;
     il = parseFloat(cs.paddingLeft) || 0;
   }
-  SAFE_T = it * k;
-  SAFE_R = ir * k;
+  // 앱은 상태바를 숨기므로(UIStatusBarHidden + SystemBars.hidden) iOS가 상단 인셋을 0으로 보고한다.
+  // → 노치/다이나믹 아일랜드·홈 인디케이터 기종은 최소 여백(CSS px)을 강제로 확보한다.
+  const _ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && 'ontouchstart' in window);
+  const _long = Math.max(vw, vh), _short = Math.min(vw, vh);
+  const _notch = _ios && _short < 500 && _long > 700;
+  // 가로 모드에선 아일랜드가 옆으로 가므로 상단 강제 여백은 세로에서만 (가로는 MIN_SIDE로 처리)
+  const MIN_TOP = _ios ? (_notch ? (vw > vh ? 0 : 54) : 20) : 0;   // CSS px
+  const MIN_BOTTOM = _ios ? (_notch ? 34 : 0) : 0;
+  const MIN_SIDE = _ios && _notch && vw > vh ? 44 : 0;  // 가로 모드의 노치 쪽
+  SAFE_T = Math.max(it, MIN_TOP) * k;
+  SAFE_R = Math.max(ir, MIN_SIDE) * k;
+  SAFE_L = Math.max(il, MIN_SIDE) * k;
   // 하단 제스처바/홈바: 인셋이 보고되면 그대로, 아니면 살짝만 여백을 둬 버튼이 화면 맨 끝에 붙지 않게 한다.
-  SAFE_B = Math.max(ib * k, 10);
-  SAFE_L = il * k;
+  SAFE_B = Math.max(ib * k, MIN_BOTTOM * k, 10);
 }
+// 상단 버튼·컨트롤의 기준 y (drawHUD·drawPause·drawIntro·drawMenu·drawShop 공용)
+function TOP_Y() { return 12 + SAFE_T; }
 window.addEventListener('resize', resize);
 resize();
 
@@ -696,7 +707,7 @@ window.addEventListener('keydown', (e) => {
   if (state === 'play') {
     if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { e.preventDefault(); doJump(); }
     if (e.code === 'KeyF' || e.code === 'KeyX' || e.code === 'ArrowRight') doPunch();
-    if (e.code === 'KeyP' || e.code === 'Escape') state = 'pause';
+    if (e.code === 'KeyP' || e.code === 'Escape') { recordBest(); state = 'pause'; }
   } else if (state === 'pause' && (e.code === 'KeyP' || e.code === 'Escape' || e.code === 'Space')) {
     state = 'play';
   } else if (state === 'intro' && (e.code === 'Space' || e.code === 'Enter')) {
@@ -891,7 +902,7 @@ function spawnThief() {
     Sound.sfx('gold');
     addFloat(W * 0.6, GY() - 220, T('goldThief'), '#ffe066', 1.3);
   } else {
-    addFloat(W * 0.6, GY() - 220, T('thiefFound', ITEM_ICONS[idx], L.items[idx]), '#ffd166', 1.15);
+    addFloat(W * 0.6, GY() - 220, T(['phoneFound', 'walletFound', 'bagFound'][idx], ITEM_ICONS[idx]), '#ffd166', 1.15);
   }
 }
 
@@ -2277,41 +2288,55 @@ function drawHUD() {
   ctx.textAlign = 'center';
   ctx.font = 'bold 26px sans-serif';
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(currentScore().toLocaleString(), W / 2, 40);
+  ctx.fillText(currentScore().toLocaleString(), W / 2, W < 520 ? 44 : 40);
 
-  // 콤보
+  // 되찾은 물건 슬롯 x (우측 상단). translate(SAFE_L) 안이므로 오른쪽 끝은 W - SAFE_L - SAFE_R.
+  const rightX = W - SAFE_L - SAFE_R - pad;
+  const sx = rightX - 3 * 40;
+
+  // 콤보 — 크기 상한을 낮추고, 중앙~소지품 줄 사이 폭으로 제한 + 반투명 pill 배경
   if (run.combo >= 5) {
     const mult = 1 + Math.floor(run.combo / 10) + (run.feverT > 0 ? 1 : 0);
-    ctx.font = `bold ${24 + Math.min(10, run.combo / 5)}px sans-serif`;
+    const comboTxt = `${run.combo} COMBO${mult > 1 ? `  x${mult}` : ''}`;
+    const csize = Math.round(20 + Math.min(8, run.combo / 5));
+    fitFont(comboTxt, Math.max(80, 2 * (sx - W / 2) - 36), csize, 'bold');
+    const cw = ctx.measureText(comboTxt).width;
+    const fs = parseFloat(ctx.font.split(' ')[1]) || csize;
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    rr(W / 2 - cw / 2 - 10, 74 - fs * 0.88, cw + 20, fs * 1.18, fs * 0.59); ctx.fill();
     ctx.fillStyle = run.feverT > 0 ? '#ffe066' : '#ffd166';
-    ctx.fillText(`${run.combo} COMBO${mult > 1 ? `  x${mult}` : ''}`, W / 2, 74);
+    ctx.textAlign = 'center';
+    ctx.fillText(comboTxt, W / 2, 74);
   }
   // 피버 표시 (FEVER 펄스 라벨 — 테두리는 아래에서 전체화면으로 따로 그린다)
   if (run.feverT > 0) {
     const pulse = 1 + Math.sin(globalT * 9) * 0.1;
+    const feverTxt = `⚡ ${T('feverLbl')} ${Math.ceil(run.feverT)}s`;
     ctx.save();
-    ctx.translate(W / 2, 104);
+    ctx.translate(W / 2, W < 520 ? 110 : 104);
     ctx.scale(pulse, pulse);
-    ctx.font = '900 18px sans-serif';
+    fitFont(feverTxt, W * 0.4, 18, '900');
     ctx.fillStyle = '#ffe066';
-    ctx.fillText(`⚡ ${T('feverLbl')} ${Math.ceil(run.feverT)}s`, 0, 0);
+    ctx.textAlign = 'center';
+    ctx.fillText(feverTxt, 0, 0);
     ctx.restore();
   }
 
-  // 되찾은 물건 슬롯 (우측 상단)
-  const sx = W - pad - 3 * 40;
   ctx.font = '24px sans-serif';
+  ctx.textAlign = 'left';
   for (let i = 0; i < 3; i++) {
     ctx.globalAlpha = i < (run.items % 3 === 0 && run.items > 0 ? 3 : run.items % 3) ? 1 : 0.22;
-    ctx.textAlign = 'left';
-    ctx.fillText(ITEM_ICONS[i], sx + i * 40, 76);
+    ctx.fillText(ITEM_ICONS[i], sx + i * 40, 80);
   }
   ctx.globalAlpha = 1;
+  // 스테이지 — 우측 정렬 + 폭 제한(가운데 피버 라벨과 겹치지 않도록 화면 오른쪽 약 30%만 사용)
   if (run.stage > 0) {
-    ctx.font = 'bold 15px sans-serif';
+    const label = T('stageLbl', run.stage + 1, L.themes[run.theme]);
     ctx.fillStyle = '#7bffc8';
+    ctx.textAlign = 'right';
+    fitFont(label, Math.max(120, rightX - W / 2 - 70), 15, 'bold');
+    ctx.fillText(label, rightX, 104);
     ctx.textAlign = 'left';
-    ctx.fillText(T('stageLbl', run.stage + 1, L.themes[run.theme]), sx - 10, 100);
   }
 
   // 파워업 잔여시간 바
@@ -2359,9 +2384,8 @@ function drawHUD() {
     ctx.strokeRect(5, 5, W - 10, H - 10);
   }
 
-  // 사운드 켬/끔 버튼 (게임 중 바로 토글) + 일시정지 버튼 — 노치/상태바 피해 안쪽으로
-  button(W - 108 - SAFE_R, pad + SAFE_T, 44, 44, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: 'rgba(255,255,255,0.14)', size: 18 });
-  button(W - 58 - SAFE_R, pad + SAFE_T, 44, 44, '⏸', () => { recordBest(); state = 'pause'; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
+  // 사운드 켬/끔 + 일시정지 버튼 (drawPause에서도 다시 그려 일시정지 중에도 동작)
+  drawTopControls();
 
   // 조작 힌트 (하단 제스처바 위로)
   if (run.hintT > 0) {
@@ -2413,6 +2437,12 @@ function drawHUD() {
       ctx.fillText(T('promptChase'), W / 2, H * 0.25);
     }
   }
+}
+
+// 우측 상단 🔊/⏸ 버튼 — 노치/다이나믹 아일랜드 피해 TOP_Y() 기준. ⏸는 일시정지 ↔ 재개 토글.
+function drawTopControls() {
+  button(W - 108 - SAFE_R, TOP_Y(), 44, 44, save.muted ? '🔇' : '🔊', () => { Sound.setMuted(!save.muted); }, { color: 'rgba(255,255,255,0.14)', size: 18 });
+  button(W - 58 - SAFE_R, TOP_Y(), 44, 44, '⏸', () => { recordBest(); state = (state === 'pause' ? 'play' : 'pause'); if (state === 'play') lastTime = 0; }, { color: 'rgba(255,255,255,0.14)', size: 20 });
 }
 
 function drawFloats() {
@@ -2659,7 +2689,7 @@ function drawStageUp() {
 function drawSizeControl() {
   const cw = 46;
   const cx = W - cw - 8 - SAFE_R;
-  let cyy = 8 + SAFE_T;
+  let cyy = TOP_Y() - 4;
   ctx.textAlign = 'center';
   ctx.font = '20px sans-serif';
   ctx.fillStyle = '#ffffff';
@@ -2843,14 +2873,14 @@ function drawShop() {
   ctx.textAlign = 'center';
   fitFont(T('btnShop'), W * 0.9, 34, '900');
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(T('btnShop'), W / 2, 56 + SAFE_T);
+  ctx.fillText(T('btnShop'), W / 2, TOP_Y() + 44);
   ctx.font = 'bold 20px sans-serif';
   ctx.fillStyle = '#ffd166';
-  ctx.fillText(T('bank', save.bank.toLocaleString()), W / 2, 90 + SAFE_T);
+  ctx.fillText(T('bank', save.bank.toLocaleString()), W / 2, TOP_Y() + 78);
 
   const rw = Math.min(560, W * 0.92);
   const rx = W / 2 - rw / 2;
-  let ry = 116 + SAFE_T;
+  let ry = TOP_Y() + 104;
   const rh = Math.min(86, (H - 210 - SAFE_T - SAFE_B) / 4 - 8);
   for (const item of SHOP) {
     const lvl = save.up[item.key];
@@ -2896,6 +2926,7 @@ function drawPause() {
   uiButtons = [];
   ctx.fillStyle = 'rgba(4,5,16,0.72)';
   ctx.fillRect(0, 0, W, H);
+  drawTopControls();   // 딤 위에 밝게 다시 그리고 uiButtons에 재등록 (일시정지 중 음소거·재개)
   ctx.textAlign = 'center';
   fitFont(T('pauseTitle'), W * 0.92, 42, '900');
   ctx.fillStyle = '#ffffff';
@@ -2903,7 +2934,8 @@ function drawPause() {
   const bw = Math.min(300, W * 0.7);
   button(W / 2 - bw / 2, H * 0.46, bw, 58, T('btnResume'), () => { state = 'play'; lastTime = 0; }, { size: 22 });
   // 홈으로: 판을 버리지 않고 보관 → 메뉴에서 '이어서 하기' 가능
-  button(W / 2 - bw / 2, H * 0.46 + 72, bw, 50, T('btnHome'), () => {
+  button(W / 2 - bw / 2, H * 0.46 + 72, bw, 50, save.muted ? T('btnSoundOff') : T('btnSoundOn'), () => { Sound.setMuted(!save.muted); }, { color: '#2a2d45', size: 18 });
+  button(W / 2 - bw / 2, H * 0.46 + 134, bw, 50, T('btnHome'), () => {
     recordBest();
     heldRun = run; heldP = P;
     run = null; P = null;
@@ -3253,9 +3285,9 @@ function drawIntro(dt) {
   ctx.textAlign = 'center';
   for (let i = 0; i < CUT.length; i++) {
     ctx.fillStyle = i === cut.i ? '#ffd166' : 'rgba(255,255,255,0.3)';
-    ctx.beginPath(); ctx.arc(W / 2 - (CUT.length - 1) * 9 + i * 18, 22 + SAFE_T, 4, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(W / 2 - (CUT.length - 1) * 9 + i * 18, TOP_Y() + 8, 4, 0, TAU); ctx.fill();
   }
-  button(W - 122 - SAFE_R, 14 + SAFE_T, 108, 40, T('skip'), () => finishIntro(), { color: 'rgba(255,255,255,0.15)', size: 15 });
+  button(W - 122 - SAFE_R, TOP_Y(), 108, 40, T('skip'), () => finishIntro(), { color: 'rgba(255,255,255,0.15)', size: 15 });
 }
 
 /* ---------------- 메인 루프 ---------------- */
